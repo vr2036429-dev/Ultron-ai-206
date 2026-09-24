@@ -1,175 +1,42 @@
-name: Build & Release ULTRON Debug APK
-
+name: Build APK & Release
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main]
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
-  build-and-release:
-    name: Build Android Debug APK
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. Checkout repository code
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # 2. Setup Node.js 22 with npm cache
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
-
-      # 3. Setup Java JDK 21 (Temurin) - Required for modern Capacitor & Android SDK 35/36
-      - name: Setup Java JDK 21
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      # 4. Setup Gradle Cache for lightning-fast builds
-      - name: Setup Gradle Cache
-        uses: gradle/actions/setup-gradle@v4
-
-      # 5. Step 1: Install Dependencies
-      - name: Install NPM Dependencies
+          distribution: temurin
+          java-version: 21
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+      - name: Build web app
+        run: npm run build
+      - name: Add and sync Android
         run: |
-          echo "==> STEP 1: Installing dependencies..."
-          if [ -f "package-lock.json" ]; then
-            npm ci || npm install
-          else
-            npm install
-          fi
-
-      - name: Log Failure (Install Dependencies)
-        if: failure()
-        run: |
-          echo "=== DEPENDENCY INSTALLATION FAILED ==="
-          cat ~/.npm/_logs/* 2>/dev/null | tail -n 100 || true
-
-      # 6. Step 2: Build Web Application
-      - name: Build Web Application Assets
-        run: |
-          echo "==> STEP 2: Building web production bundle..."
-          npm run build
-
-      - name: Log Failure (Build Web Assets)
-        if: failure()
-        run: |
-          echo "=== WEB BUILD FAILED ==="
-          ls -la
-          npx vite build --debug || true
-
-      # 7. Step 3: Setup & Sync Capacitor Android Platform
-      - name: Setup & Sync Capacitor Android
-        run: |
-          echo "==> STEP 3: Initializing and syncing Android platform..."
-          if [ ! -d "android" ]; then
-            echo "android/ directory not found. Running npx cap add android..."
-            npx cap add android
-          fi
-
-          # Ensure Android permissions in AndroidManifest.xml
-          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST_PATH" ]; then
-            PERMISSIONS='
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.FLASHLIGHT" />
-    <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />'
-
-            if ! grep -q "RECORD_AUDIO" "$MANIFEST_PATH"; then
-              sed -i "/<manifest/a $PERMISSIONS" "$MANIFEST_PATH"
-            fi
-          fi
-
-          echo "Running npx cap sync android..."
+          if [ ! -d android ]; then npx cap add android; fi
           npx cap sync android
-
-      - name: Log Failure (Capacitor Sync)
-        if: failure()
+      - name: Build debug APK
+        working-directory: android
         run: |
-          echo "=== CAPACITOR SYNC FAILED ==="
-          npx cap doctor || true
-
-      # 8. Step 4: Build Debug APK with Gradle inside android/
-      - name: Build Debug APK with Gradle
-        run: |
-          echo "==> STEP 4: Building debug APK using Gradle..."
-          cd android
           chmod +x gradlew
           ./gradlew assembleDebug --stacktrace --no-daemon
-
-      - name: Log Failure (Gradle Build)
-        if: failure()
+      - name: Rename APK
         run: |
-          echo "=== GRADLE BUILD FAILED (LAST 100 LINES) ==="
-          cd android && ./gradlew --status || true
-          ls -laR android/app/build/ || true
-
-      # 9. Step 5: Locate, verify and rename APK
-      - name: Prepare APK Asset
-        id: apk_step
-        run: |
-          echo "==> STEP 5: Packaging APK..."
-          DEFAULT_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
-          if [ -f "$DEFAULT_PATH" ]; then
-            APK_PATH="$DEFAULT_PATH"
-          else
-            APK_PATH=$(find android -type f -name "*debug*.apk" | head -n 1)
-          fi
-
-          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
-            echo "ERROR: Debug APK could not be found!"
-            ls -laR android/app/build/outputs/ || true
-            exit 1
-          fi
-
-          FINAL_APK="ULTRON-v1.0.${{ github.run_number }}.apk"
-          cp "$APK_PATH" "$FINAL_APK"
-          echo "apk_file=$FINAL_APK" >> $GITHUB_OUTPUT
-          echo "tag=v1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
-          echo "Successfully generated APK: $FINAL_APK ($(du -h "$FINAL_APK" | cut -f1))"
-
-      # 10. Step 6: Upload APK as Workflow Artifact
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ULTRON-Debug-APK
-          path: ${{ steps.apk_step.outputs.apk_file }}
-          retention-days: 14
-
-      # 11. Step 7: Create GitHub Release & attach APK
-      - name: Publish to GitHub Releases
+          APK=$(find android -name "*-debug.apk" | head -n 1)
+          cp "$APK" ULTRON-v1.0.${{ github.run_number }}.apk
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.apk_step.outputs.tag }}
-          name: "ULTRON ${{ steps.apk_step.outputs.tag }}"
-          files: ${{ steps.apk_step.outputs.apk_file }}
-          draft: false
-          prerelease: false
+          tag_name: v1.0.${{ github.run_number }}
+          files: ULTRON-v1.0.${{ github.run_number }}.apk
           generate_release_notes: true
-          body: |
-            ### 🤖 ULTRON Jarvis Android Assistant
-            
-            **Version**: `${{ steps.apk_step.outputs.tag }}` (Build #${{ github.run_number }})
-            
-            #### 📦 Ready-to-Install APK
-            - **Download APK**: [`${{ steps.apk_step.outputs.apk_file }}`](https://github.com/${{ github.repository }}/releases/download/${{ steps.apk_step.outputs.tag }}/${{ steps.apk_step.outputs.apk_file }})
-            
-            *(Signed automatically with Android debug key — ready to install directly on your Android device)*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
