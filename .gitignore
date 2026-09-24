@@ -7,19 +7,16 @@ coverage/
 .env*
 !.env.example
 
-# Android & Keystore Security
+# Android
+android/
+
+# Keystore & Secrets
 *.keystore
 *.jks
 *.p12
-android/app/release.keystore
 local.properties
 
 # Gradle & Build Artifacts
 .gradle/
-android/build/
-android/app/build/
-android/.gradle/
-android/.idea/
 *.apk
 *.aab
-

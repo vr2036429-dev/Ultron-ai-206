@@ -23,8 +23,21 @@ jobs:
         run: npm run build
       - name: Add and sync Android
         run: |
-          if [ ! -d android ]; then npx cap add android; fi
+          if [ ! -f android/gradlew ]; then
+            echo "android/ incomplete, regenerating..."
+            rm -rf android
+            npx cap add android
+          fi
           npx cap sync android
+          ls -la android
+      - name: Inject Android Permissions
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            if ! grep -q "RECORD_AUDIO" "$MANIFEST"; then
+              sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CAMERA" />' "$MANIFEST"
+            fi
+          fi
       - name: Build debug APK
         working-directory: android
         run: |
