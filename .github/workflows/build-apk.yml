@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-and-release:
-    name: Build Bulletproof Debug APK & Publish Release
+    name: Build Android Debug APK
     runs-on: ubuntu-latest
 
     steps:
@@ -22,68 +22,65 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 2. Setup Node.js 20 environment with npm caching
-      - name: Setup Node.js 20
+      # 2. Setup Node.js 22 with npm cache
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
-      # 3. Setup Java JDK 17 (Temurin)
-      - name: Setup Java JDK 17
+      # 3. Setup Java JDK 21 (Temurin) - Required for modern Capacitor & Android SDK 35/36
+      - name: Setup Java JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
-      # 4. Setup Gradle Cache
+      # 4. Setup Gradle Cache for lightning-fast builds
       - name: Setup Gradle Cache
         uses: gradle/actions/setup-gradle@v4
 
-      # 5. Smart Dependency Installation (npm ci if lockfile present, else npm install)
+      # 5. Step 1: Install Dependencies
       - name: Install NPM Dependencies
         run: |
           echo "==> STEP 1: Installing dependencies..."
           if [ -f "package-lock.json" ]; then
-            echo "package-lock.json found. Running npm ci..."
             npm ci || npm install
           else
-            echo "No package-lock.json found. Running npm install..."
             npm install
           fi
 
-          # Ensure Capacitor packages are present
-          if ! npm list @capacitor/core >/dev/null 2>&1; then
-            echo "Installing Capacitor core and CLI..."
-            npm install @capacitor/core @capacitor/cli @capacitor/android --save
-          fi
-          echo "==> Dependencies successfully installed."
-
-      # 6. Build Web Application Assets with Vite
-      - name: Build Web Application
+      - name: Log Failure (Install Dependencies)
+        if: failure()
         run: |
-          echo "==> STEP 2: Building web production assets (npm run build)..."
-          if npm run build; then
-            echo "==> Web build completed successfully."
-          else
-            echo "ERROR: Web build failed!"
-            ls -la
-            exit 1
-          fi
+          echo "=== DEPENDENCY INSTALLATION FAILED ==="
+          cat ~/.npm/_logs/* 2>/dev/null | tail -n 100 || true
 
-      # 7. Setup & Sync Capacitor Android
+      # 6. Step 2: Build Web Application
+      - name: Build Web Application Assets
+        run: |
+          echo "==> STEP 2: Building web production bundle..."
+          npm run build
+
+      - name: Log Failure (Build Web Assets)
+        if: failure()
+        run: |
+          echo "=== WEB BUILD FAILED ==="
+          ls -la
+          npx vite build --debug || true
+
+      # 7. Step 3: Setup & Sync Capacitor Android Platform
       - name: Setup & Sync Capacitor Android
         run: |
-          echo "==> STEP 3: Configuring Android platform..."
+          echo "==> STEP 3: Initializing and syncing Android platform..."
           if [ ! -d "android" ]; then
-            echo "Android directory not found. Adding Android platform via Capacitor..."
+            echo "android/ directory not found. Running npx cap add android..."
             npx cap add android
           fi
 
           # Ensure Android permissions in AndroidManifest.xml
           MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
-            echo "Checking and injecting Android permissions..."
             PERMISSIONS='
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -96,61 +93,58 @@ jobs:
 
             if ! grep -q "RECORD_AUDIO" "$MANIFEST_PATH"; then
               sed -i "/<manifest/a $PERMISSIONS" "$MANIFEST_PATH"
-              echo "Permissions injected."
             fi
           fi
 
-          echo "Syncing Capacitor Android..."
+          echo "Running npx cap sync android..."
           npx cap sync android
-          echo "==> Capacitor Android sync complete."
 
-      # 8. Ensure Gradlew exists and is executable
-      - name: Ensure Gradlew Wrapper and Permissions
+      - name: Log Failure (Capacitor Sync)
+        if: failure()
         run: |
-          echo "==> STEP 4: Verifying Gradle wrapper..."
+          echo "=== CAPACITOR SYNC FAILED ==="
+          npx cap doctor || true
+
+      # 8. Step 4: Build Debug APK with Gradle inside android/
+      - name: Build Debug APK with Gradle
+        run: |
+          echo "==> STEP 4: Building debug APK using Gradle..."
           cd android
-          if [ ! -f "gradlew" ]; then
-            echo "gradlew missing! Generating Gradle wrapper..."
-            gradle wrapper || true
-          fi
           chmod +x gradlew
-          echo "==> gradlew is ready and executable."
-
-      # 9. Build Debug APK with Gradle inside android/ folder
-      - name: Build Android Debug APK
-        run: |
-          echo "==> STEP 5: Building Debug APK via Gradle..."
-          cd android
           ./gradlew assembleDebug --stacktrace --no-daemon
-          echo "==> Gradle assembleDebug finished."
 
-      # 10. Locate, rename and verify APK
+      - name: Log Failure (Gradle Build)
+        if: failure()
+        run: |
+          echo "=== GRADLE BUILD FAILED (LAST 100 LINES) ==="
+          cd android && ./gradlew --status || true
+          ls -laR android/app/build/ || true
+
+      # 9. Step 5: Locate, verify and rename APK
       - name: Prepare APK Asset
         id: apk_step
         run: |
-          echo "==> STEP 6: Locating generated APK..."
+          echo "==> STEP 5: Packaging APK..."
           DEFAULT_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
-          
           if [ -f "$DEFAULT_PATH" ]; then
-            APK_FOUND="$DEFAULT_PATH"
+            APK_PATH="$DEFAULT_PATH"
           else
-            echo "Standard path not found, scanning for debug APK..."
-            APK_FOUND=$(find android -type f -name "*debug*.apk" | head -n 1)
+            APK_PATH=$(find android -type f -name "*debug*.apk" | head -n 1)
           fi
 
-          if [ -z "$APK_FOUND" ] || [ ! -f "$APK_FOUND" ]; then
-            echo "ERROR: Could not locate generated APK!"
+          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+            echo "ERROR: Debug APK could not be found!"
             ls -laR android/app/build/outputs/ || true
             exit 1
           fi
 
-          FINAL_APK_NAME="ULTRON-v1.0.${{ github.run_number }}.apk"
-          cp "$APK_FOUND" "$FINAL_APK_NAME"
-          echo "apk_file=$FINAL_APK_NAME" >> $GITHUB_OUTPUT
+          FINAL_APK="ULTRON-v1.0.${{ github.run_number }}.apk"
+          cp "$APK_PATH" "$FINAL_APK"
+          echo "apk_file=$FINAL_APK" >> $GITHUB_OUTPUT
           echo "tag=v1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
-          echo "==> APK ready: $FINAL_APK_NAME ($(du -h "$FINAL_APK_NAME" | cut -f1))"
+          echo "Successfully generated APK: $FINAL_APK ($(du -h "$FINAL_APK" | cut -f1))"
 
-      # 11. Upload APK as workflow artifact
+      # 10. Step 6: Upload APK as Workflow Artifact
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -158,7 +152,7 @@ jobs:
           path: ${{ steps.apk_step.outputs.apk_file }}
           retention-days: 14
 
-      # 12. Create GitHub Release and attach APK
+      # 11. Step 7: Create GitHub Release & attach APK
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
@@ -169,22 +163,13 @@ jobs:
           prerelease: false
           generate_release_notes: true
           body: |
-            ### 🤖 ULTRON Jarvis Android Assistant - Automatic Debug Build
+            ### 🤖 ULTRON Jarvis Android Assistant
             
             **Version**: `${{ steps.apk_step.outputs.tag }}` (Build #${{ github.run_number }})
             
-            #### 📦 Download Ready APK
-            - **Download**: [`${{ steps.apk_step.outputs.apk_file }}`](https://github.com/${{ github.repository }}/releases/download/${{ steps.apk_step.outputs.tag }}/${{ steps.apk_step.outputs.apk_file }})
+            #### 📦 Ready-to-Install APK
+            - **Download APK**: [`${{ steps.apk_step.outputs.apk_file }}`](https://github.com/${{ github.repository }}/releases/download/${{ steps.apk_step.outputs.tag }}/${{ steps.apk_step.outputs.apk_file }})
             
-            *(Signed automatically with Android debug key — install directly on your phone)*
+            *(Signed automatically with Android debug key — ready to install directly on your Android device)*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 13. Diagnostics if any step fails
-      - name: Print Debug Tree on Failure
-        if: failure()
-        run: |
-          echo "=== BUILD FAILED: REPOSITORY STRUCTURE DIAGNOSTICS ==="
-          ls -la
-          echo "=== ANDROID DIRECTORY (IF PRESENT) ==="
-          ls -laR android/ || true
