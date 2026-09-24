@@ -71,6 +71,9 @@ const TAB_DISPLAY_NAMES: Record<ViewTab, string> = {
   settings: 'System Settings',
 };
 
+let globalMessageCounter = 0;
+const createMessageId = (prefix = 'msg') => `${prefix}_${Date.now()}_${++globalMessageCounter}`;
+
 export default function App() {
   // Core state machine
   const [state, setState] = useState<UltronState>('STANDBY');
@@ -304,7 +307,7 @@ export default function App() {
 
     // 1. Add User Message to History
     const userMsg: Message = {
-      id: `usr_${Date.now()}`,
+      id: createMessageId('usr'),
       role: 'user',
       content: trimmed,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -332,7 +335,7 @@ export default function App() {
       setMessages((prev) => [
         ...prev,
         {
-          id: `lock_${Date.now()}`,
+          id: createMessageId('lock'),
           role: 'assistant',
           content: text,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -389,7 +392,7 @@ export default function App() {
       setMessages((prev) => [
         ...prev,
         {
-          id: `sec_${Date.now()}`,
+          id: createMessageId('sec'),
           role: 'assistant',
           content: text,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -410,7 +413,7 @@ export default function App() {
       setMessages((prev) => [
         ...prev,
         {
-          id: `diag_${Date.now()}`,
+          id: createMessageId('diag'),
           role: 'assistant',
           content: text,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -429,7 +432,7 @@ export default function App() {
       setMessages((prev) => [
         ...prev,
         {
-          id: `stop_${Date.now()}`,
+          id: createMessageId('stop'),
           role: 'assistant',
           content: text,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -462,7 +465,7 @@ export default function App() {
       setMessages((prev) => [
         ...prev,
         {
-          id: `auto_${Date.now()}`,
+          id: createMessageId('auto'),
           role: 'assistant',
           content: text,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -491,7 +494,7 @@ export default function App() {
       setMessages((prev) => [
         ...prev,
         {
-          id: `code_${Date.now()}`,
+          id: createMessageId('code'),
           role: 'assistant',
           content: text,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -513,7 +516,7 @@ export default function App() {
         setMessages((prev) => [
           ...prev,
           {
-            id: `task_${Date.now()}`,
+            id: createMessageId('task'),
             role: 'assistant',
             content: text,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -527,7 +530,7 @@ export default function App() {
         setMessages((prev) => [
           ...prev,
           {
-            id: `task_${Date.now()}`,
+            id: createMessageId('task'),
             role: 'assistant',
             content: text,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -684,7 +687,7 @@ export default function App() {
 
       // 5. Append Assistant Response to Chat
       const assistantMsg: Message = {
-        id: `asst_${Date.now()}`,
+        id: createMessageId('asst'),
         role: 'assistant',
         content: assistantText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -722,7 +725,7 @@ export default function App() {
       const errorMsgText = `System alert: unable to execute command. ${err.message || 'Offline mode active.'}`;
       
       const errorMsg: Message = {
-        id: `err_${Date.now()}`,
+        id: createMessageId('err'),
         role: 'assistant',
         content: errorMsgText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -778,7 +781,7 @@ export default function App() {
         setMessages((prev) => [
           ...prev,
           {
-            id: `live_tool_${Date.now()}`,
+            id: createMessageId('live_tool'),
             role: 'assistant',
             content: `Executed ${toolCall.name}: ${result.message}`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -1007,21 +1010,9 @@ export default function App() {
 
       {/* Top HUD Header */}
       <HudHeader
-        state={state}
         activeTab={activeTab}
-        onTabChange={(tab) => {
-          if (tab === 'settings') {
-            setSettingsModalOpen(true);
-          } else {
-            setActiveTab(tab);
-          }
-        }}
-        deviceStatus={deviceStatus}
-        isListening={isListening}
-        biometricEnrolled={preferences.biometricEnrolled}
-        onToggleTorch={handleToggleTorch}
-        onToggleMic={handleToggleListening}
-        onOpenVoiceLock={() => setVoiceLockModalOpen(true)}
+        onOpenSettings={() => setSettingsModalOpen(true)}
+        onBackToMain={() => setActiveTab('orb_hud')}
       />
 
       {/* Main Content Area based on Tab with Touch Gesture Support */}
@@ -1048,17 +1039,7 @@ export default function App() {
             isSpeaking={isSpeaking}
             transcription={transcription}
             assistantResponseText={assistantSpokenText}
-            wakeWord={preferences.wakeWord}
-            voiceMode={preferences.voiceMode}
-            voiceEngine={preferences.voiceEngine || 'live_audio'}
-            liveVoiceState={liveVoiceState}
-            isMuted={isMicMuted}
             onToggleListening={handleToggleListening}
-            onStopSpeaking={() => voiceService.stopSpeaking()}
-            onToggleMute={handleToggleMute}
-            onToggleEngine={handleToggleEngine}
-            onInterruptAi={handleInterruptAi}
-            onOpenVoiceLock={() => setVoiceLockModalOpen(true)}
             onSubmitCommand={(cmd, isVoice) => handleExecuteCommand(cmd, isVoice)}
           />
         )}
@@ -1191,14 +1172,34 @@ export default function App() {
         onClose={() => setAppWindowModal({ isOpen: false, appName: '', actionParam: '' })}
       />
 
-      {/* 5. System Settings Modal */}
+      {/* 5. System Settings Hub Modal */}
       <SettingsModal
         isOpen={settingsModalOpen}
         preferences={preferences}
         contextFacts={contextFacts}
+        deviceStatus={deviceStatus}
+        isListening={isListening}
+        isMicMuted={isMicMuted}
         onClose={() => setSettingsModalOpen(false)}
         onUpdatePreferences={handleUpdatePreferences}
         onClearMemory={handleClearMemory}
+        onToggleTorch={handleToggleTorch}
+        onToggleMute={handleToggleMute}
+        onToggleListening={handleToggleListening}
+        onOpenVoiceLock={() => setVoiceLockModalOpen(true)}
+        onInterruptAi={handleInterruptAi}
+        onExecuteCommand={(cmd, isVoice) => handleExecuteCommand(cmd, isVoice)}
+        onSelectTab={(tab) => {
+          setActiveTab(tab);
+          setSettingsModalOpen(false);
+        }}
+        onInspectScreen={handleInspectScreen}
+        onTriggerVibration={() => {
+          if (navigator.vibrate) navigator.vibrate([100, 60, 100]);
+        }}
+        onCheckBattery={() => {
+          voiceService.speak(`Battery level is ${(deviceStatus.batteryLevel * 100).toFixed(0)} percent, charging status verified.`);
+        }}
       />
 
       {/* 6. Owner Voice Authentication & Voice Lock Modal */}

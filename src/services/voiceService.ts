@@ -140,7 +140,7 @@ export class VoiceService {
 
   public startListening(wakeWord: string = 'ULTRON', isUserGesture: boolean = false) {
     if (!this.isSpeechSupported()) {
-      voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'error', 'Speech recognition is not supported in this browser environment.');
+      voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'warning', 'Speech recognition is not supported in this browser environment. You can type commands directly.');
       this.onError?.('Speech recognition is not supported in this browser. You can type commands directly.');
       return;
     }
@@ -262,17 +262,17 @@ export class VoiceService {
           return;
         }
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'error', 'Microphone access denied by browser or system settings.');
-          this.onError?.('Microphone access was denied. Please allow microphone permissions in your browser or device settings.');
+          voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'warning', 'Microphone access awaiting permission. Tap microphone icon or orb to allow.');
+          this.onError?.('Microphone access awaiting permission. Please allow microphone permissions in your browser or device settings.');
           this.isListening = false;
           this.shouldStayListening = false;
           this.permissionDenied = true;
-          this.onStateChange?.('ERROR');
+          this.onStateChange?.('STANDBY');
         } else if (event.error === 'audio-capture') {
-          voicePipelineDiagnostics.updateStage('AUDIO_INPUT', 'error', 'No microphone hardware detected or audio capture failed.');
+          voicePipelineDiagnostics.updateStage('AUDIO_INPUT', 'warning', 'No microphone audio captured or input device busy.');
           this.isListening = false;
           this.shouldStayListening = false;
-          this.onStateChange?.('ERROR');
+          this.onStateChange?.('STANDBY');
         } else {
           voicePipelineDiagnostics.updateStage('AUDIO_CAPTURE', 'warning', `Capture event notice: ${event.error}`);
         }

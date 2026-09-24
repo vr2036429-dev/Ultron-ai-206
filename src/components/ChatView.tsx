@@ -69,94 +69,103 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </p>
           </div>
         ) : (
-          messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex flex-col ${
-                msg.role === 'user' ? 'items-end' : 'items-start'
-              }`}
-            >
-              <div className="flex items-start gap-2.5 max-w-[85%]">
-                {msg.role !== 'user' && (
-                  <div className="w-8 h-8 rounded-lg bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <Bot className="w-4 h-4 text-cyan-400" />
-                  </div>
-                )}
+          messages.map((msg, index) => {
+            const messageKey = msg.id ? `${msg.id}-${index}` : `msg-${index}-${msg.timestamp}`;
+            return (
+              <div
+                key={messageKey}
+                className={`flex flex-col ${
+                  msg.role === 'user' ? 'items-end' : 'items-start'
+                }`}
+              >
+                <div className="flex items-start gap-2.5 max-w-[85%]">
+                  {msg.role !== 'user' && (
+                    <div className="w-8 h-8 rounded-lg bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Bot className="w-4 h-4 text-cyan-400" />
+                    </div>
+                  )}
 
-                <div>
-                  {/* Message Bubble */}
-                  <div
-                    className={`p-3.5 rounded-2xl text-sm leading-relaxed ${
-                      msg.role === 'user'
-                        ? 'bg-gradient-to-r from-cyan-600 to-sky-700 text-white rounded-tr-none shadow-md'
-                        : 'bg-[#0f172a]/90 text-slate-200 border border-cyan-500/20 rounded-tl-none'
-                    }`}
-                  >
-                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  <div>
+                    {/* Message Bubble */}
+                    <div
+                      className={`p-3.5 rounded-2xl text-sm leading-relaxed ${
+                        msg.role === 'user'
+                          ? 'bg-gradient-to-r from-cyan-600 to-sky-700 text-white rounded-tr-none shadow-md'
+                          : 'bg-[#0f172a]/90 text-slate-200 border border-cyan-500/20 rounded-tl-none'
+                      }`}
+                    >
+                      <p className="whitespace-pre-wrap">{msg.content}</p>
 
-                    {/* Web Research Sources */}
-                    {msg.sources && msg.sources.length > 0 && (
-                      <div className="mt-3 pt-2.5 border-t border-cyan-500/20">
-                        <span className="text-[10px] font-mono-code text-cyan-300 uppercase tracking-wider block mb-1.5">
-                          Verified References:
-                        </span>
-                        <div className="space-y-1">
-                          {msg.sources.map((src, i) => (
-                            <a
-                              key={i}
-                              href={src.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-200 underline decoration-cyan-500/40"
-                            >
-                              <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                              <span className="truncate">{src.title}</span>
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Tool Call / Execution Results */}
-                    {msg.toolResults && msg.toolResults.length > 0 && (
-                      <div className="mt-3 space-y-2">
-                        {msg.toolResults.map((tr) => (
-                          <div
-                            key={tr.toolCallId}
-                            className="bg-[#080d1a] border border-cyan-500/30 rounded-xl p-2.5 text-xs font-mono-code"
-                          >
-                            <div
-                              className="flex items-center justify-between cursor-pointer select-none"
-                              onClick={() => toggleToolExpand(tr.toolCallId)}
-                            >
-                              <div className="flex items-center gap-1.5 text-cyan-300">
-                                <Wrench className="w-3.5 h-3.5 text-cyan-400" />
-                                <span className="font-semibold">{tr.toolName}</span>
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                                  SUCCESS
-                                </span>
-                              </div>
-                              {expandedToolId === tr.toolCallId ? (
-                                <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
-                              ) : (
-                                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-                              )}
-                            </div>
-
-                            <p className="text-slate-300 mt-1">
-                              {tr.message}
-                            </p>
-
-                            {expandedToolId === tr.toolCallId && tr.data && (
-                              <pre className="mt-2 p-2 bg-[#04060a] rounded text-[10px] text-cyan-400/90 overflow-x-auto max-h-36">
-                                {JSON.stringify(tr.data, null, 2)}
-                              </pre>
-                            )}
+                      {/* Web Research Sources */}
+                      {msg.sources && msg.sources.length > 0 && (
+                        <div className="mt-3 pt-2.5 border-t border-cyan-500/20">
+                          <span className="text-[10px] font-mono-code text-cyan-300 uppercase tracking-wider block mb-1.5">
+                            Verified References:
+                          </span>
+                          <div className="space-y-1">
+                            {msg.sources.map((src, i) => (
+                              <a
+                                key={`source-${i}-${src.url || ''}`}
+                                href={src.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-200 underline decoration-cyan-500/40"
+                              >
+                                <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                                <span className="truncate">{src.title}</span>
+                              </a>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                        </div>
+                      )}
+
+                      {/* Tool Call / Execution Results */}
+                      {msg.toolResults && msg.toolResults.length > 0 && (
+                        <div className="mt-3 space-y-2">
+                          {msg.toolResults.map((tr, trIdx) => {
+                            const toolKey = tr.toolCallId 
+                              ? `${tr.toolCallId}-${trIdx}` 
+                              : `tool-${tr.toolName}-${trIdx}`;
+                            const isExpanded = expandedToolId === (tr.toolCallId || toolKey);
+
+                            return (
+                              <div
+                                key={toolKey}
+                                className="bg-[#080d1a] border border-cyan-500/30 rounded-xl p-2.5 text-xs font-mono-code"
+                              >
+                                <div
+                                  className="flex items-center justify-between cursor-pointer select-none"
+                                  onClick={() => toggleToolExpand(tr.toolCallId || toolKey)}
+                                >
+                                  <div className="flex items-center gap-1.5 text-cyan-300">
+                                    <Wrench className="w-3.5 h-3.5 text-cyan-400" />
+                                    <span className="font-semibold">{tr.toolName}</span>
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                      SUCCESS
+                                    </span>
+                                  </div>
+                                  {isExpanded ? (
+                                    <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
+                                  ) : (
+                                    <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                                  )}
+                                </div>
+
+                                <p className="text-slate-300 mt-1">
+                                  {tr.message}
+                                </p>
+
+                                {isExpanded && tr.data && (
+                                  <pre className="mt-2 p-2 bg-[#04060a] rounded text-[10px] text-cyan-400/90 overflow-x-auto max-h-36">
+                                    {JSON.stringify(tr.data, null, 2)}
+                                  </pre>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
 
                   {/* Message Meta Info (Time & Voice Replay) */}
                   <div className={`flex items-center gap-2 mt-1 px-1 text-[10px] font-mono-code text-slate-400 ${
@@ -189,8 +198,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
               </div>
             </div>
-          ))
-        )}
+          );
+        })
+      )}
         <div ref={messagesEndRef} />
       </div>
 

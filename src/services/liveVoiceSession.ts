@@ -98,9 +98,9 @@ export class AudioInputManager {
                            err?.message?.toLowerCase().includes('permission') || 
                            err?.message?.toLowerCase().includes('denied');
       if (isPermDenied) {
-        voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'error', 'Microphone access denied by browser or system settings.');
+        voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'warning', 'Microphone awaiting permission or user grant. Tap microphone to allow.');
       } else {
-        voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'warning', `Microphone hardware initialization note: ${err?.message || err}`);
+        voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'warning', `Microphone hardware notice: ${err?.message || err}`);
       }
       this.stop();
       throw err;

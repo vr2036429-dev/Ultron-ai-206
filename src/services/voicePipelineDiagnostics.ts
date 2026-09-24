@@ -159,8 +159,8 @@ export class VoicePipelineDiagnosticsService {
     const logText = `${prefix} [${status.toUpperCase()}] ${message}${latencyStr}`;
 
     if (status === 'error') {
-      console.error(logText, details || '');
-      diagnosticEngine.log('ULTRON_AUDIO', 'error', logText, details);
+      console.warn(logText, details || '');
+      diagnosticEngine.log('ULTRON_AUDIO', 'warn', logText, details);
     } else if (status === 'warning') {
       console.warn(logText, details || '');
       diagnosticEngine.log('ULTRON_AUDIO', 'warn', logText, details);
