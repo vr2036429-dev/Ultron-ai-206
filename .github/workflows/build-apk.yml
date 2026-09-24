@@ -12,12 +12,12 @@ permissions:
 
 jobs:
   build-and-release:
-    name: Build Debug APK & Publish Release
+    name: Build Bulletproof Debug APK & Publish Release
     runs-on: ubuntu-latest
 
     steps:
       # 1. Checkout repository code
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -29,40 +29,61 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      # 3. Setup Java JDK 17
+      # 3. Setup Java JDK 17 (Temurin)
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # 4. Setup Gradle Cache for lightning-fast builds
+      # 4. Setup Gradle Cache
       - name: Setup Gradle Cache
         uses: gradle/actions/setup-gradle@v4
 
-      # 5. Install Project Dependencies
+      # 5. Smart Dependency Installation (npm ci if lockfile present, else npm install)
       - name: Install NPM Dependencies
         run: |
-          npm ci || npm install
+          echo "==> STEP 1: Installing dependencies..."
+          if [ -f "package-lock.json" ]; then
+            echo "package-lock.json found. Running npm ci..."
+            npm ci || npm install
+          else
+            echo "No package-lock.json found. Running npm install..."
+            npm install
+          fi
 
-      # 6. Build Web Production Assets with Vite
+          # Ensure Capacitor packages are present
+          if ! npm list @capacitor/core >/dev/null 2>&1; then
+            echo "Installing Capacitor core and CLI..."
+            npm install @capacitor/core @capacitor/cli @capacitor/android --save
+          fi
+          echo "==> Dependencies successfully installed."
+
+      # 6. Build Web Application Assets with Vite
       - name: Build Web Application
         run: |
-          npx vite build
+          echo "==> STEP 2: Building web production assets (npm run build)..."
+          if npm run build; then
+            echo "==> Web build completed successfully."
+          else
+            echo "ERROR: Web build failed!"
+            ls -la
+            exit 1
+          fi
 
       # 7. Setup & Sync Capacitor Android
       - name: Setup & Sync Capacitor Android
         run: |
-          # If capacitor android project does not exist yet, initialize it
+          echo "==> STEP 3: Configuring Android platform..."
           if [ ! -d "android" ]; then
-            echo "Adding Capacitor Android platform..."
+            echo "Android directory not found. Adding Android platform via Capacitor..."
             npx cap add android
           fi
 
-          # Ensure AndroidManifest contains necessary voice and device permissions
+          # Ensure Android permissions in AndroidManifest.xml
           MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
-            echo "Injecting Android permissions into AndroidManifest.xml..."
+            echo "Checking and injecting Android permissions..."
             PERMISSIONS='
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -75,48 +96,61 @@ jobs:
 
             if ! grep -q "RECORD_AUDIO" "$MANIFEST_PATH"; then
               sed -i "/<manifest/a $PERMISSIONS" "$MANIFEST_PATH"
+              echo "Permissions injected."
             fi
           fi
 
+          echo "Syncing Capacitor Android..."
           npx cap sync android
+          echo "==> Capacitor Android sync complete."
 
-      # 8. Grant execute permission to gradlew
-      - name: Grant Execute Permission to gradlew
+      # 8. Ensure Gradlew exists and is executable
+      - name: Ensure Gradlew Wrapper and Permissions
         run: |
-          if [ -f "android/gradlew" ]; then
-            chmod +x android/gradlew
-          elif [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
+          echo "==> STEP 4: Verifying Gradle wrapper..."
+          cd android
+          if [ ! -f "gradlew" ]; then
+            echo "gradlew missing! Generating Gradle wrapper..."
+            gradle wrapper || true
           fi
+          chmod +x gradlew
+          echo "==> gradlew is ready and executable."
 
-      # 9. Build Debug APK (Android signs automatically with debug key - No secrets or keystore needed)
+      # 9. Build Debug APK with Gradle inside android/ folder
       - name: Build Android Debug APK
         run: |
-          if [ -d "android" ]; then
-            cd android
-            ./gradlew assembleDebug --stacktrace
-          else
-            ./gradlew assembleDebug --stacktrace
-          fi
+          echo "==> STEP 5: Building Debug APK via Gradle..."
+          cd android
+          ./gradlew assembleDebug --stacktrace --no-daemon
+          echo "==> Gradle assembleDebug finished."
 
-      # 10. Locate, rename and prepare the generated debug APK
+      # 10. Locate, rename and verify APK
       - name: Prepare APK Asset
         id: apk_step
         run: |
-          APK_FOUND=$(find . -name "*-debug.apk" | head -n 1)
-          if [ -z "$APK_FOUND" ]; then
-            echo "ERROR: Debug APK not found in build outputs!"
+          echo "==> STEP 6: Locating generated APK..."
+          DEFAULT_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          
+          if [ -f "$DEFAULT_PATH" ]; then
+            APK_FOUND="$DEFAULT_PATH"
+          else
+            echo "Standard path not found, scanning for debug APK..."
+            APK_FOUND=$(find android -type f -name "*debug*.apk" | head -n 1)
+          fi
+
+          if [ -z "$APK_FOUND" ] || [ ! -f "$APK_FOUND" ]; then
+            echo "ERROR: Could not locate generated APK!"
+            ls -laR android/app/build/outputs/ || true
             exit 1
           fi
-          
+
           FINAL_APK_NAME="ULTRON-v1.0.${{ github.run_number }}.apk"
           cp "$APK_FOUND" "$FINAL_APK_NAME"
           echo "apk_file=$FINAL_APK_NAME" >> $GITHUB_OUTPUT
           echo "tag=v1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
-          echo "Successfully created: $FINAL_APK_NAME"
-          ls -lh "$FINAL_APK_NAME"
+          echo "==> APK ready: $FINAL_APK_NAME ($(du -h "$FINAL_APK_NAME" | cut -f1))"
 
-      # 11. Upload APK as workflow artifact (Available directly on Actions summary)
+      # 11. Upload APK as workflow artifact
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -137,11 +171,20 @@ jobs:
           body: |
             ### 🤖 ULTRON Jarvis Android Assistant - Automatic Debug Build
             
-            **Version**: `${{ steps.apk_step.outputs.tag }}`
+            **Version**: `${{ steps.apk_step.outputs.tag }}` (Build #${{ github.run_number }})
             
-            #### 📦 Download APK
-            - **Download Ready APK**: [`${{ steps.apk_step.outputs.apk_file }}`](https://github.com/${{ github.repository }}/releases/download/${{ steps.apk_step.outputs.tag }}/${{ steps.apk_step.outputs.apk_file }})
+            #### 📦 Download Ready APK
+            - **Download**: [`${{ steps.apk_step.outputs.apk_file }}`](https://github.com/${{ github.repository }}/releases/download/${{ steps.apk_step.outputs.tag }}/${{ steps.apk_step.outputs.apk_file }})
             
-            *(Signed automatically with Android debug key — ready to install directly on your phone)*
+            *(Signed automatically with Android debug key — install directly on your phone)*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 13. Diagnostics if any step fails
+      - name: Print Debug Tree on Failure
+        if: failure()
+        run: |
+          echo "=== BUILD FAILED: REPOSITORY STRUCTURE DIAGNOSTICS ==="
+          ls -la
+          echo "=== ANDROID DIRECTORY (IF PRESENT) ==="
+          ls -laR android/ || true
