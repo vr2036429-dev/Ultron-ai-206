@@ -1,0 +1,209 @@
+name: ULTRON Zero-Setup Android APK Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repository code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. Dynamic Versioning from GitHub Actions Run Number
+      - name: Compute Build Version
+        id: versioning
+        run: |
+          VERSION_TAG="v1.0.${{ github.run_number }}"
+          CLEAN_VERSION="1.0.${{ github.run_number }}"
+          echo "tag=${VERSION_TAG}" >> $GITHUB_OUTPUT
+          echo "clean_version=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
+          echo "version_code=${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "Starting ZERO-SETUP build for ULTRON: ${VERSION_TAG}"
+
+      # 3. Setup Node.js 20 environment with npm caching
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      # 4. Setup Java JDK 17
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 5. Gradle Caching for faster builds
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      # 6. Install Project Dependencies
+      - name: Install NPM Dependencies
+        run: |
+          npm ci || npm install
+
+      # 7. Build Web Application Assets with Vite
+      - name: Build Web Assets (Vite)
+        run: |
+          npx vite build
+
+      # 8. Sync & Initialize Capacitor Android Project + Inject Permissions
+      - name: Setup & Sync Capacitor Android
+        run: |
+          if [ ! -d "android" ]; then
+            echo "Initializing Capacitor Android project..."
+            npx cap add android
+          fi
+
+          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_PATH" ]; then
+            echo "Injecting Android permissions into AndroidManifest.xml..."
+            PERMISSIONS='
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FLASHLIGHT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />'
+
+            if ! grep -q "RECORD_AUDIO" "$MANIFEST_PATH"; then
+              sed -i "/<manifest/a $PERMISSIONS" "$MANIFEST_PATH"
+            fi
+          fi
+
+          npx cap sync android
+
+      # 9. ZERO-SETUP: Generate Production Keystore on the fly inside the workflow
+      - name: Auto-Generate Android Keystore
+        run: |
+          mkdir -p android/app
+          echo "Generating self-contained release keystore..."
+          keytool -genkeypair -v \
+            -keystore android/app/release.keystore \
+            -alias ultron \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass ultron123 \
+            -keypass ultron123 \
+            -dname "CN=ULTRON, OU=AI, O=Jarvis, L=Global, S=Core, C=US"
+          echo "Release keystore generated successfully at android/app/release.keystore"
+
+      # 10. Configure build.gradle with Built-in Signing (No external config needed)
+      - name: Configure build.gradle Signing Config
+        run: |
+          BUILD_GRADLE="android/app/build.gradle"
+          if [ -f "$BUILD_GRADLE" ]; then
+            python3 -c '
+path = "android/app/build.gradle"
+with open(path, "r") as f:
+    content = f.read()
+
+signing_snippet = """
+    signingConfigs {
+        release {
+            storeFile file("release.keystore")
+            storePassword "ultron123"
+            keyAlias "ultron"
+            keyPassword "ultron123"
+        }
+    }
+"""
+
+if "signingConfigs {" not in content:
+    content = content.replace("android {", "android {\n" + signing_snippet)
+if "signingConfig signingConfigs.release" not in content:
+    content = content.replace("buildTypes {", "buildTypes {\n        release {\n            signingConfig signingConfigs.release\n        }")
+
+with open(path, "w") as f:
+    f.write(content)
+'
+          fi
+
+      # 11. Grant Execute Permission to gradlew
+      - name: Make Gradlew Executable
+        run: chmod +x android/gradlew
+
+      # 12. Build Signed Release APK with Gradle
+      - name: Build Release APK
+        env:
+          APP_VERSION_NAME: ${{ steps.versioning.outputs.clean_version }}
+          APP_VERSION_CODE: ${{ steps.versioning.outputs.version_code }}
+          KEYSTORE_PASSWORD: "ultron123"
+          KEY_ALIAS: "ultron"
+          KEY_PASSWORD: "ultron123"
+        run: |
+          cd android
+          ./gradlew assembleRelease --stacktrace
+
+      # 13. Rename and Prepare APK for GitHub Release
+      - name: Package Final APK
+        id: apk_step
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk -name "*release*.apk" -o -name "*unsigned*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          fi
+          
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: Release APK could not be found!"
+            exit 1
+          fi
+          
+          FINAL_NAME="ULTRON-${{ steps.versioning.outputs.tag }}.apk"
+          cp "$APK_PATH" "$FINAL_NAME"
+          echo "apk_file=$FINAL_NAME" >> $GITHUB_OUTPUT
+          echo "Generated signed APK: $FINAL_NAME"
+
+      # 14. Upload APK as workflow artifact (Direct download from Actions run)
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ULTRON-APK
+          path: ${{ steps.apk_step.outputs.apk_file }}
+          retention-days: 14
+
+      # 15. Automatically Tag & Publish Release on GitHub
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.versioning.outputs.tag }}
+          name: "ULTRON ${{ steps.versioning.outputs.tag }}"
+          files: ${{ steps.apk_step.outputs.apk_file }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ### 🤖 ULTRON Jarvis Android Assistant - Auto Release
+            
+            **Version**: `${{ steps.versioning.outputs.tag }}` (Build #${{ steps.versioning.outputs.version_code }})
+            
+            #### 📦 Android Package
+            - **Download Signed APK**: [`${{ steps.apk_step.outputs.apk_file }}`](https://github.com/${{ github.repository }}/releases/download/${{ steps.versioning.outputs.tag }}/${{ steps.apk_step.outputs.apk_file }})
+            
+            #### ⚡ Features
+            - 🎙️ Multi-layer Owner Voice Authentication (ASIK) & Anti-Spoof Protection
+            - 🔄 Touch gesture navigation & continuous voice loop
+            - 📱 Device Hardware Controls (Flashlight, Volume, Vibration, System Settings)
+            - 🔑 In-app Gemini API Key configuration via Settings (stored on device)
+            
+            ---
+            *Zero-Setup automatic build generated on commit push to `${{ github.ref_name }}`.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
