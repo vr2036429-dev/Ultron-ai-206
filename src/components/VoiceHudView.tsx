@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Mic, MicOff, Send } from 'lucide-react';
+import { Mic, MicOff, Send, AlertTriangle, X } from 'lucide-react';
 import { UltronState } from '../types';
 import { UltronOrb } from './UltronOrb';
 
@@ -9,8 +9,11 @@ interface VoiceHudViewProps {
   isSpeaking: boolean;
   transcription: string;
   assistantResponseText: string;
+  errorMessage?: string | null;
   onToggleListening: () => void;
   onSubmitCommand: (command: string, isVoiceInput?: boolean) => void;
+  onDismissError?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
@@ -19,8 +22,11 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   isSpeaking,
   transcription,
   assistantResponseText,
+  errorMessage,
   onToggleListening,
   onSubmitCommand,
+  onDismissError,
+  onOpenSettings,
 }) => {
   const [manualText, setManualText] = useState('');
 
@@ -33,12 +39,12 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
 
   const getStatusLabel = () => {
     if (state === 'USER_SPEAKING' || (isListening && transcription)) return 'User Speaking...';
-    if (state === 'AI_SPEAKING' || state === 'SPEAKING' || isSpeaking) return 'ULTRON Speaking...';
+    if (state === 'AI_SPEAKING' || state === 'SPEAKING' || isSpeaking) return 'ULTRON Speaking (24kHz)...';
     if (state === 'PROCESSING' || state === 'THINKING') return 'Processing Directive...';
-    if (state === 'LISTENING' || isListening) return 'Listening...';
-    if (state === 'INTERRUPTED') return 'Interrupted';
+    if (state === 'LISTENING' || isListening) return 'Listening (16kHz PCM)...';
+    if (state === 'INTERRUPTED') return 'Interrupted (Barge-In)';
     if (state === 'RECONNECTING') return 'Reconnecting Live Stream...';
-    return 'Standby / Voice Ready';
+    return 'Standby / Live Voice Ready';
   };
 
   return (
@@ -59,7 +65,7 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
           size={290}
         />
 
-        {/* Status Text: "Standby / Voice Ready" */}
+        {/* Status Text: "Standby / Live Voice Ready" */}
         <div className="mt-5 flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#070b14]/80 border border-cyan-500/20 backdrop-blur shadow-[0_0_15px_rgba(6,182,212,0.12)]">
           <span className={`w-2 h-2 rounded-full ${isListening ? 'bg-cyan-400 animate-ping' : isSpeaking ? 'bg-emerald-400 animate-pulse' : 'bg-cyan-500/80'}`} />
           <span className="text-xs font-mono-code text-cyan-300 font-medium tracking-wider">
@@ -67,19 +73,50 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
           </span>
         </div>
 
+        {/* Actionable Error Banner if any */}
+        {errorMessage && (
+          <div className="mt-3.5 w-full bg-red-950/80 border border-red-500/50 p-3 rounded-2xl flex items-center justify-between text-xs font-mono-code text-red-200 shadow-[0_0_20px_rgba(239,68,68,0.25)] animate-in fade-in slide-in-from-top-2">
+            <div className="flex items-center gap-2.5 flex-1 pr-2">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+              <span className="text-[11px] leading-tight font-medium">{errorMessage}</span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {errorMessage.toLowerCase().includes('key') && onOpenSettings && (
+                <button
+                  type="button"
+                  onClick={onOpenSettings}
+                  className="px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 border border-red-500/40 text-[10px] font-bold transition-colors"
+                >
+                  SETTINGS
+                </button>
+              )}
+              {onDismissError && (
+                <button
+                  type="button"
+                  onClick={onDismissError}
+                  className="p-1 rounded-lg hover:bg-red-900/60 text-red-400 hover:text-white transition-colors"
+                  title="Dismiss notice"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Live Speech Subtitle when active */}
         <div className="mt-3 min-h-[48px] w-full px-2 text-center flex items-center justify-center">
           {transcription ? (
             <div className="animate-fade-in bg-[#080f1e]/85 border border-cyan-500/30 px-4 py-2 rounded-xl backdrop-blur shadow-[0_0_15px_rgba(6,182,212,0.15)]">
               <span className="text-[10px] font-mono-code text-cyan-400 uppercase tracking-widest block mb-0.5">
-                ● Live Input
+                ● Live 16kHz Input
               </span>
               <p className="text-sm text-slate-100 font-medium">"{transcription}"</p>
             </div>
           ) : assistantResponseText && (state === 'SPEAKING' || state === 'AI_SPEAKING' || isSpeaking) ? (
             <div className="animate-fade-in bg-[#061418]/85 border border-emerald-500/30 px-4 py-2 rounded-xl backdrop-blur shadow-[0_0_15px_rgba(16,185,129,0.15)]">
               <span className="text-[10px] font-mono-code text-emerald-400 uppercase tracking-widest block mb-0.5">
-                ● ULTRON Response
+                ● ULTRON 24kHz Stream
               </span>
               <p className="text-xs text-slate-200 line-clamp-2">{assistantResponseText}</p>
             </div>

@@ -26,7 +26,7 @@ export type UltronState =
   | 'IDLE'
   | 'STOPPED';
 
-export type VoiceEngineType = 'live_audio' | 'fallback_stt_tts';
+export type VoiceEngineType = 'live_audio';
 
 export type VoiceMode = 'wake' | 'wakeword' | 'continuous' | 'continuous_owner' | 'push_to_talk';
 

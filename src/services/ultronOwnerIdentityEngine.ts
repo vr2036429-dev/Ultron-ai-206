@@ -11,6 +11,7 @@ import { ultronAdaptiveAuth } from './ultronAdaptiveAuthenticationEngine';
 import { ultronSecurityAuditLog } from './ultronSecurityAuditLog';
 import { ultronVoiceAuth } from './ultronVoiceAuthService';
 import { voiceService } from './voiceService';
+import { liveVoiceSession } from './liveVoiceSession';
 
 export class UltronOwnerIdentityEngine {
   private static instance: UltronOwnerIdentityEngine | null = null;
@@ -276,7 +277,7 @@ export class UltronOwnerIdentityEngine {
   public triggerEmergencyLock() {
     ultronTrustSession.revokeTrust('Owner Emergency Voice Lock triggered.');
     ultronVoiceAuth.resetEnrollmentStateOnly();
-    voiceService.stopListening();
+    liveVoiceSession.stopSession();
     voiceService.stopSpeaking();
 
     ultronSecurityAuditLog.logEvent({

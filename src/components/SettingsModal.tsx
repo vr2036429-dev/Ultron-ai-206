@@ -371,44 +371,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <span>Voice Engine & Diagnostics</span>
               </div>
 
-              {/* Engine Switcher */}
-              {isMatch('live audio engine 24khz fallback stt tts speech') && (
+              {/* Primary Voice Architecture (Fixed Default: Live Audio-to-Audio) */}
+              {isMatch('live audio engine 24khz gemini live pcm speech') && (
                 <div>
-                  <label className="text-slate-300 font-semibold block mb-2">
-                    Primary Voice Architecture
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <div
-                      onClick={() => onUpdatePreferences({ voiceEngine: 'live_audio', audioToAudioEnabled: true })}
-                      className={`p-3.5 rounded-2xl border cursor-pointer transition-all ${
-                        preferences.voiceEngine !== 'fallback_stt_tts'
-                          ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200 shadow-[0_0_15px_rgba(6,182,212,0.15)]'
-                          : 'bg-[#090f1e] border-slate-800 text-slate-400 hover:border-cyan-500/30'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-semibold text-slate-100 flex items-center gap-1.5">
-                          <Zap className="w-3.5 h-3.5 text-amber-400" />
-                          Live Audio-to-Audio (24kHz)
-                        </span>
-                        {preferences.voiceEngine !== 'fallback_stt_tts' && <Check className="w-4 h-4 text-cyan-400" />}
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-slate-300 font-semibold text-xs tracking-wide">
+                      Primary Voice Architecture
+                    </label>
+                    <span className="text-[10px] font-mono-code px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full flex items-center gap-1.5 font-bold shadow-[0_0_8px_rgba(16,185,129,0.2)]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      DEFAULT ENGINE ACTIVE
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-[#090f1e] border border-cyan-500/30 shadow-[0_0_20px_rgba(6,182,212,0.12)] space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 flex items-center justify-center shadow-[0_0_12px_rgba(6,182,212,0.3)]">
+                        <Zap className="w-5 h-5 text-cyan-300" />
                       </div>
-                      <p className="text-[11px] opacity-80">Bidirectional 24kHz audio stream with zero-delay interruption</p>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-white text-sm flex items-center gap-2">
+                            Live Audio-to-Audio (24kHz)
+                            <span className="text-[9px] font-mono-code px-1.5 py-0.5 bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 rounded">
+                              GEMINI LIVE
+                            </span>
+                          </span>
+                          <Check className="w-4 h-4 text-emerald-400" />
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Bidirectional streaming 16kHz PCM input / 24kHz PCM output with zero-delay barge-in
+                        </p>
+                      </div>
                     </div>
 
-                    <div
-                      onClick={() => onUpdatePreferences({ voiceEngine: 'fallback_stt_tts', audioToAudioEnabled: false })}
-                      className={`p-3.5 rounded-2xl border cursor-pointer transition-all ${
-                        preferences.voiceEngine === 'fallback_stt_tts'
-                          ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200 shadow-[0_0_15px_rgba(6,182,212,0.15)]'
-                          : 'bg-[#090f1e] border-slate-800 text-slate-400 hover:border-cyan-500/30'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-semibold text-slate-100">Standard Voice (STT/TTS)</span>
-                        {preferences.voiceEngine === 'fallback_stt_tts' && <Check className="w-4 h-4 text-cyan-400" />}
+                    <div className="grid grid-cols-3 gap-2 pt-2.5 border-t border-cyan-950/60 text-[10px]">
+                      <div className="p-2 rounded-xl bg-[#050811] border border-cyan-950/80">
+                        <span className="text-slate-500 block text-[9px]">Acoustic Input</span>
+                        <span className="text-cyan-300 font-semibold font-mono-code">16kHz PCM16</span>
                       </div>
-                      <p className="text-[11px] opacity-80">Browser Web Speech API fallback pipeline</p>
+                      <div className="p-2 rounded-xl bg-[#050811] border border-cyan-950/80">
+                        <span className="text-slate-500 block text-[9px]">Neural Output</span>
+                        <span className="text-cyan-300 font-semibold font-mono-code">24kHz PCM16</span>
+                      </div>
+                      <div className="p-2 rounded-xl bg-[#050811] border border-cyan-950/80">
+                        <span className="text-slate-500 block text-[9px]">Interruption</span>
+                        <span className="text-emerald-400 font-semibold font-mono-code">Zero-Delay Barge-In</span>
+                      </div>
                     </div>
                   </div>
                 </div>

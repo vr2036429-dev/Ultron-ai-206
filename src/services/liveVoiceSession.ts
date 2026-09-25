@@ -1,17 +1,47 @@
 import { LiveVoiceState, ToolCall, ToolResult } from '../types';
 import { toolRegistry } from './toolRegistry';
 import { voicePipelineDiagnostics } from './voicePipelineDiagnostics';
+import { ultronVoiceAuth } from './ultronVoiceAuthService';
+
+// AudioWorklet processor source for high-performance audio capture
+const WORKLET_PROCESSOR_CODE = `
+class PcmCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs, outputs, parameters) {
+    const input = inputs[0];
+    if (input && input[0] && input[0].length > 0) {
+      this.port.postMessage(input[0]);
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-capture-processor', PcmCaptureProcessor);
+`;
 
 // ============================================================================
-// 1. Audio Input Manager (16kHz PCM Capture & Downsampling)
+// 1. Audio Input Manager (AudioWorklet + 16kHz PCM Capture & Downsampling)
 // ============================================================================
 export class AudioInputManager {
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
+  private workletNode: AudioWorkletNode | null = null;
   private processor: ScriptProcessorNode | null = null;
   private analyser: AnalyserNode | null = null;
   private isCapturing = false;
   private isMuted = false;
+  private sampleAccumulator: number[] = [];
+
+  public async ensureAudioContext(): Promise<AudioContext> {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) throw new Error('Web Audio API not supported in this browser');
+
+    if (!this.audioContext || this.audioContext.state === 'closed') {
+      this.audioContext = new AudioCtx();
+    }
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
+    }
+    return this.audioContext;
+  }
 
   public async start(
     onAudioChunk: (base64Pcm: string, rawRms: number) => void
@@ -19,19 +49,14 @@ export class AudioInputManager {
     try {
       if (this.isCapturing) return true;
 
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) throw new Error('Web Audio API not supported in this browser');
-
-      this.audioContext = new AudioCtx();
-      if (this.audioContext.state === 'suspended') {
-        await this.audioContext.resume();
-      }
+      await this.ensureAudioContext();
+      if (!this.audioContext) throw new Error('AudioContext unavailable');
 
       voicePipelineDiagnostics.startTurn();
       voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'active', 'Requesting microphone permission...');
       voicePipelineDiagnostics.updateStage('AUDIO_INPUT', 'active', 'Initializing hardware acoustic stream...');
 
-      // Robust Android/Browser Acoustic Echo Cancellation & Noise Suppression
+      // Android/Browser Acoustic Echo Cancellation, Noise Suppression & AGC
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -51,18 +76,13 @@ export class AudioInputManager {
       const source = this.audioContext.createMediaStreamSource(this.mediaStream);
       source.connect(this.analyser);
 
-      // Buffer size: 4096 samples at audioContext.sampleRate
-      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-      this.analyser.connect(this.processor);
-      this.processor.connect(this.audioContext.destination);
-
       const inputSampleRate = this.audioContext.sampleRate;
       const targetSampleRate = 16000;
+      this.sampleAccumulator = [];
 
-      this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
+      // Handler for converting raw Float32 samples to 16kHz PCM16 Base64 chunks
+      const handleRawSamples = (inputChannelData: Float32Array) => {
         if (!this.isCapturing || this.isMuted) return;
-
-        const inputChannelData = e.inputBuffer.getChannelData(0);
 
         // 1. Compute RMS energy for VAD
         let sumSquares = 0;
@@ -86,19 +106,59 @@ export class AudioInputManager {
         onAudioChunk(base64Chunk, rms);
       };
 
+      // Try AudioWorklet first for smooth, glitch-free audio processing
+      let workletInitialized = false;
+      if (this.audioContext.audioWorklet) {
+        try {
+          const blob = new Blob([WORKLET_PROCESSOR_CODE], { type: 'application/javascript' });
+          const blobUrl = URL.createObjectURL(blob);
+          await this.audioContext.audioWorklet.addModule(blobUrl);
+          URL.revokeObjectURL(blobUrl);
+
+          this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-capture-processor');
+          this.workletNode.port.onmessage = (e) => {
+            const raw = e.data;
+            if (raw instanceof Float32Array) {
+              handleRawSamples(raw);
+            } else if (Array.isArray(raw)) {
+              handleRawSamples(new Float32Array(raw));
+            }
+          };
+
+          this.analyser.connect(this.workletNode);
+          this.workletNode.connect(this.audioContext.destination);
+          workletInitialized = true;
+          console.log('[AudioInputManager] AudioWorklet 16kHz PCM capture online.');
+        } catch (workletError) {
+          console.warn('[AudioInputManager] AudioWorklet initialization fallback to ScriptProcessor:', workletError);
+        }
+      }
+
+      // Graceful fallback to ScriptProcessorNode if AudioWorklet unavailable in WebView/Frame
+      if (!workletInitialized) {
+        this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+        this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
+          const inputChannelData = e.inputBuffer.getChannelData(0);
+          handleRawSamples(inputChannelData);
+        };
+        this.analyser.connect(this.processor);
+        this.processor.connect(this.audioContext.destination);
+        console.log('[AudioInputManager] ScriptProcessorNode 16kHz PCM capture online.');
+      }
+
       this.isCapturing = true;
       voicePipelineDiagnostics.updateStage('AUDIO_CAPTURE', 'success', `Acoustic PCM capture active (${inputSampleRate}Hz -> 16kHz downsampler online).`);
       voicePipelineDiagnostics.updateStage('VAD', 'active', 'VAD listening for acoustic energy...');
       console.log(`[AudioInputManager] Microphonic capture active at ${inputSampleRate}Hz -> downsampling to 16kHz PCM.`);
       return true;
     } catch (err: any) {
-      console.warn('[AudioInputManager] Microphone capture initialization notice:', err?.message || err);
+      console.warn('[AudioInputManager] Microphone capture initialization error:', err?.message || err);
       const isPermDenied = err?.name === 'NotAllowedError' || 
                            err?.name === 'PermissionDeniedError' || 
                            err?.message?.toLowerCase().includes('permission') || 
                            err?.message?.toLowerCase().includes('denied');
       if (isPermDenied) {
-        voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'warning', 'Microphone awaiting permission or user grant. Tap microphone to allow.');
+        voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'warning', 'Microphone permission denied. Tap microphone icon to grant permission.');
       } else {
         voicePipelineDiagnostics.updateStage('MIC_PERMISSION', 'warning', `Microphone hardware notice: ${err?.message || err}`);
       }
@@ -129,6 +189,12 @@ export class AudioInputManager {
 
   public stop() {
     this.isCapturing = false;
+    if (this.workletNode) {
+      try {
+        this.workletNode.disconnect();
+      } catch (e) {}
+      this.workletNode = null;
+    }
     if (this.processor) {
       try {
         this.processor.disconnect();
@@ -162,13 +228,26 @@ export class AudioOutputManager {
   private onPlaybackStateChange?: (isPlaying: boolean) => void;
   private activePlaybackTimer: any = null;
 
+  public async ensureAudioContext(): Promise<AudioContext> {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) throw new Error('Web Audio API not supported');
+
+    if (!this.audioContext || this.audioContext.state === 'closed') {
+      this.audioContext = new AudioCtx({ sampleRate: 24000 });
+    }
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
+    }
+    return this.audioContext;
+  }
+
   public init(onPlaybackStateChange?: (isPlaying: boolean) => void) {
     this.onPlaybackStateChange = onPlaybackStateChange;
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return;
 
     if (!this.audioContext || this.audioContext.state === 'closed') {
-      this.audioContext = new AudioCtx();
+      this.audioContext = new AudioCtx({ sampleRate: 24000 });
     }
 
     if (this.audioContext.state === 'suspended') {
@@ -231,14 +310,13 @@ export class AudioOutputManager {
       this.activeSources.push(source);
 
       this.nextStartTime += audioBuffer.duration;
-
       this.onPlaybackStateChange?.(true);
 
       // Track playback duration
       clearTimeout(this.activePlaybackTimer);
       const remainingMs = Math.max(100, (this.nextStartTime - this.audioContext.currentTime) * 1000);
       this.activePlaybackTimer = setTimeout(() => {
-        if (this.activeSources.length === 0 || this.audioContext?.currentTime! >= this.nextStartTime - 0.05) {
+        if (this.activeSources.length === 0 || (this.audioContext && this.audioContext.currentTime >= this.nextStartTime - 0.05)) {
           this.onPlaybackStateChange?.(false);
         }
       }, remainingMs + 50);
@@ -398,7 +476,8 @@ export class LiveVoiceSession {
   private currentAssistantSpokenText = '';
 
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 3;
+  private maxReconnectAttempts = 4;
+  private lastSessionOptions?: { userName: string; memoryContext?: any; recentHistory?: any[] };
 
   private constructor() {
     this.setupVadHandlers();
@@ -415,6 +494,19 @@ export class LiveVoiceSession {
     this.callbacks = callbacks;
   }
 
+  // Pre-unlock AudioContext on user touch/click gesture
+  public async unlockAudio(): Promise<void> {
+    try {
+      await Promise.all([
+        this.inputManager.ensureAudioContext(),
+        this.outputManager.ensureAudioContext(),
+      ]);
+      console.log('[LiveVoiceSession] AudioContexts unlocked via user gesture.');
+    } catch (e) {
+      console.warn('[LiveVoiceSession] AudioContext unlock notice:', e);
+    }
+  }
+
   private setState(state: LiveVoiceState) {
     if (this.currentState === state) return;
     this.currentState = state;
@@ -428,6 +520,12 @@ export class LiveVoiceSession {
 
   private setupVadHandlers() {
     this.vad.onSpeechStart = () => {
+      // Voice Lock verification check
+      if (ultronVoiceAuth.isVoiceLockEnabled()) {
+        const isAuth = ultronVoiceAuth.getAuthState();
+        console.log('[LiveVoiceSession] Voice Lock (ASIK ONLY) verification status:', isAuth);
+      }
+
       if (this.currentState !== 'INTERRUPTED') {
         this.setState('USER_SPEAKING');
       }
@@ -459,6 +557,8 @@ export class LiveVoiceSession {
     memoryContext?: any;
     recentHistory?: any[];
   }): Promise<boolean> {
+    this.lastSessionOptions = options;
+
     try {
       if (this.sessionActive) {
         console.log('[LiveVoiceSession] Session already active.');
@@ -467,7 +567,8 @@ export class LiveVoiceSession {
 
       this.setState('RECONNECTING');
 
-      // 1. Initialize audio output manager
+      // 1. Pre-warm and unlock audio output manager
+      await this.unlockAudio();
       this.outputManager.init((isPlaying) => {
         if (isPlaying) {
           if (this.currentState !== 'AI_SPEAKING' && this.currentState !== 'USER_SPEAKING') {
@@ -492,9 +593,9 @@ export class LiveVoiceSession {
         const connectionTimeout = setTimeout(() => {
           if (!isDone) {
             isDone = true;
-            reject(new Error('Live Voice connection timeout'));
+            reject(new Error('Connection timed out. Check network or server status.'));
           }
-        }, 4000);
+        }, 5000);
 
         if (!this.socket) {
           clearTimeout(connectionTimeout);
@@ -528,14 +629,14 @@ export class LiveVoiceSession {
           if (isDone) return;
           isDone = true;
           clearTimeout(connectionTimeout);
-          console.warn('[LiveVoiceSession] WebSocket channel unavailable in current frame/container:', (err as any)?.type || 'handshake_notice');
-          reject(new Error('WebSocket channel unavailable in preview frame'));
+          console.warn('[LiveVoiceSession] WebSocket channel connection failed:', (err as any)?.type || err);
+          reject(new Error('Unable to establish WebSocket connection to server.'));
         };
       });
 
       this.setupSocketListeners();
 
-      // 3. Start Microphone Capture
+      // 3. Start Microphone Capture (AudioWorklet 16kHz PCM)
       await this.inputManager.start((base64Pcm, rms) => {
         // Voice Activity Detection
         const isAiSpeaking = this.outputManager.isPlaying();
@@ -560,14 +661,15 @@ export class LiveVoiceSession {
                            err?.name === 'PermissionDeniedError' || 
                            err?.message?.toLowerCase().includes('permission') || 
                            err?.message?.toLowerCase().includes('denied');
-      console.warn('[LiveVoiceSession] Live session notice:', err?.message || err);
+      console.warn('[LiveVoiceSession] Live session initialization error:', err?.message || err);
       this.setState('STOPPED');
       this.stopSession();
-      // Only fallback if failure wasn't due to hard microphone denial
-      this.callbacks?.onError(
-        isPermDenied ? 'Microphone permission denied by browser or system settings.' : (err?.message || 'Live session unavailable'), 
-        !isPermDenied
-      );
+
+      const errMsg = isPermDenied
+        ? 'Microphone permission denied. Please allow microphone access in your browser or Android settings.'
+        : (err?.message || 'Live Audio session could not be started.');
+
+      this.callbacks?.onError(errMsg, false);
       return false;
     }
   }
@@ -583,6 +685,7 @@ export class LiveVoiceSession {
           console.log(`[LiveVoiceSession] Native Live Audio-to-Audio active with model: ${msg.model}, voice: ${msg.voice}`);
           voicePipelineDiagnostics.updateStage('LIVE_SESSION', 'success', `Connected to Live Audio model: ${msg.model}`);
           voicePipelineDiagnostics.updateStage('UI_STATE', 'active', 'UI transitioned to LISTENING');
+          this.reconnectAttempts = 0;
           this.setState('LISTENING');
         } else if (msg.type === 'audio') {
           // Play incoming 24kHz PCM chunk progressively
@@ -641,7 +744,7 @@ export class LiveVoiceSession {
         } else if (msg.type === 'error') {
           console.warn('[LiveVoiceSession] Server notice:', msg.message);
           voicePipelineDiagnostics.updateStage('LIVE_SESSION', 'warning', msg.message);
-          this.callbacks?.onError(msg.message, msg.canFallback !== false);
+          this.callbacks?.onError(msg.message, false);
         }
       } catch (err: any) {
         console.warn('[LiveVoiceSession] Error handling socket message:', err);
@@ -660,7 +763,7 @@ export class LiveVoiceSession {
     };
 
     this.socket.onerror = (err) => {
-      console.warn('[LiveVoiceSession] Socket channel event:', (err as any)?.type || 'event');
+      console.warn('[LiveVoiceSession] Socket channel error event:', (err as any)?.type || 'event');
     };
   }
 
@@ -668,19 +771,19 @@ export class LiveVoiceSession {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = Math.pow(2, this.reconnectAttempts) * 1000;
-      console.log(`[LiveVoiceSession] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
+      console.log(`[LiveVoiceSession] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
       this.setState('RECONNECTING');
 
       setTimeout(() => {
-        if (this.sessionActive) {
-          this.startSession({ userName: 'Asik' }).catch(() => {
-            this.callbacks?.onError('Live channel unavailable. Switching to standard voice engine.', true);
+        if (this.sessionActive && this.lastSessionOptions) {
+          this.startSession(this.lastSessionOptions).catch((err) => {
+            console.warn('[LiveVoiceSession] Reconnect attempt failed:', err);
           });
         }
       }, delay);
     } else {
       this.setState('STOPPED');
-      this.callbacks?.onError('Live connection unavailable. Switching to standard voice engine.', true);
+      this.callbacks?.onError('Live voice connection lost. Tap Orb or Mic to reconnect.', false);
       this.stopSession();
     }
   }

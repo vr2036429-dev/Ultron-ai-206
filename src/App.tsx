@@ -84,6 +84,7 @@ export default function App() {
   const [assistantSpokenText, setAssistantSpokenText] = useState<string>('');
   const [liveVoiceState, setLiveVoiceState] = useState<LiveVoiceState>('STOPPED');
   const [isMicMuted, setIsMicMuted] = useState<boolean>(false);
+  const [voiceErrorMessage, setVoiceErrorMessage] = useState<string | null>(null);
 
   // Conversation history
   const [messages, setMessages] = useState<Message[]>([
@@ -790,59 +791,12 @@ export default function App() {
           },
         ]);
       },
-      onError: (errMsg: string, canFallback: boolean) => {
-        console.warn('[Live Voice Engine] Notice:', errMsg);
-        if (canFallback) {
-          console.log('[Live Voice Engine] Seamlessly switching to Standard Voice engine...');
-          handleUpdatePreferences({ voiceEngine: 'fallback_stt_tts' });
-          voiceService.startListening(preferencesRef.current.wakeWord, true);
-          setIsListening(true);
-          setState('LISTENING');
-        } else {
-          setIsListening(false);
-          setState('STANDBY');
-        }
-      },
-    });
-
-    // 2. Setup Standard STT/TTS Fallback Engine Callbacks
-    voiceService.setCallbacks({
-      onInterimResult: (text: string) => {
-        setTranscription(text);
-        if (stateRef.current !== 'LISTENING') {
-          setState('LISTENING');
-        }
-      },
-      onFinalResult: (finalText: string) => {
-        console.log('[ULTRON Voice Pipeline] Captured turn final speech:', finalText);
-        setTranscription(finalText);
-        // Dispatch to AI pipeline
-        handleExecuteCommand(finalText, true);
-      },
-      onError: (error: string) => {
-        console.warn('[ULTRON Voice Pipeline] Recognition notice:', error);
+      onError: (errMsg: string) => {
+        console.warn('[Live Voice Engine] Error event:', errMsg);
+        setVoiceErrorMessage(errMsg);
         setIsListening(false);
-        setState('STANDBY');
-      },
-      onStateChange: (listening: boolean) => {
-        setIsListening(listening);
-        if (!listening && stateRef.current === 'LISTENING') {
-          setState('STANDBY');
-        }
-      },
-      onSpeakStart: () => {
-        setIsSpeaking(true);
-        setState('SPEAKING');
-      },
-      onSpeakEnd: () => {
         setIsSpeaking(false);
-        // Return to listening if continuous mode is on, else STANDBY
-        if (preferencesRef.current.voiceMode === 'continuous') {
-          setState('LISTENING');
-          voiceService.startListening();
-        } else {
-          setState('STANDBY');
-        }
+        setState('STANDBY');
       },
     });
   }, [handleExecuteCommand]);
@@ -892,41 +846,36 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // Toggle Voice Listening (Audio-to-Audio Live Session / Standard STT)
+  // Toggle Voice Listening (Audio-to-Audio Live Session 24kHz)
   // -------------------------------------------------------------
   const handleToggleListening = async () => {
-    const isLive = preferences.voiceEngine !== 'fallback_stt_tts';
+    setVoiceErrorMessage(null);
 
     if (isListening) {
-      if (isLive) {
-        liveVoiceSession.stopSession();
-      }
-      voiceService.stopListening();
-      voiceService.stopSpeaking();
+      liveVoiceSession.stopSession();
       setIsListening(false);
       setIsSpeaking(false);
       setState('STANDBY');
     } else {
-      if (isLive) {
-        liveVoiceSession.setSensitivity(preferences.vadSensitivity || 3);
-        const started = await liveVoiceSession.startSession({
-          userName: preferences.userName,
-          memoryContext: {
-            facts: contextFacts,
-            deviceStatus,
-          },
-          recentHistory: messages,
-        });
-        if (started) {
-          setIsListening(true);
-        } else {
-          console.warn('[ULTRON Core] Live session could not start. Standing by.');
-          setIsListening(false);
-          setState('STANDBY');
-        }
-      } else {
-        voiceService.startListening(preferences.wakeWord, true);
+      // 1. Resume AudioContext directly upon user tap (prevents browser/WebView blocking)
+      await liveVoiceSession.unlockAudio();
+
+      // 2. Start Live Audio-to-Audio session with VAD sensitivity
+      liveVoiceSession.setSensitivity(preferences.vadSensitivity || 3);
+      const started = await liveVoiceSession.startSession({
+        userName: preferences.userName,
+        memoryContext: {
+          facts: contextFacts,
+          deviceStatus,
+        },
+        recentHistory: messages,
+      });
+
+      if (started) {
         setIsListening(true);
+      } else {
+        setIsListening(false);
+        setState('STANDBY');
       }
     }
   };
@@ -936,31 +885,8 @@ export default function App() {
     setIsMicMuted(muted);
   };
 
-  const handleToggleEngine = () => {
-    const nextEngine: VoiceEngineType = preferences.voiceEngine === 'fallback_stt_tts' ? 'live_audio' : 'fallback_stt_tts';
-    handleUpdatePreferences({ voiceEngine: nextEngine, audioToAudioEnabled: nextEngine === 'live_audio' });
-
-    if (isListening) {
-      if (nextEngine === 'live_audio') {
-        voiceService.stopListening();
-        voiceService.stopSpeaking();
-        liveVoiceSession.startSession({
-          userName: preferences.userName,
-          memoryContext: { facts: contextFacts, deviceStatus },
-          recentHistory: messages,
-        });
-      } else {
-        liveVoiceSession.stopSession();
-        voiceService.startListening();
-      }
-    }
-  };
-
   const handleInterruptAi = () => {
-    if (preferences.voiceEngine !== 'fallback_stt_tts') {
-      liveVoiceSession.interrupt();
-    }
-    voiceService.stopSpeaking();
+    liveVoiceSession.interrupt();
     setIsSpeaking(false);
     setState('LISTENING');
   };
@@ -1039,8 +965,11 @@ export default function App() {
             isSpeaking={isSpeaking}
             transcription={transcription}
             assistantResponseText={assistantSpokenText}
+            errorMessage={voiceErrorMessage}
             onToggleListening={handleToggleListening}
             onSubmitCommand={(cmd, isVoice) => handleExecuteCommand(cmd, isVoice)}
+            onDismissError={() => setVoiceErrorMessage(null)}
+            onOpenSettings={() => setSettingsModalOpen(true)}
           />
         )}
 

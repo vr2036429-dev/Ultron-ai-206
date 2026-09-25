@@ -941,11 +941,11 @@ async function startServer() {
 
           const ai = getGenAI(msg.apiKey);
           if (!ai) {
-            console.warn('[ULTRON Live Server] No GEMINI_API_KEY detected. Informing client to fallback.');
+            console.warn('[ULTRON Live Server] No GEMINI_API_KEY detected. Informing client.');
             clientWs.send(JSON.stringify({
               type: 'error',
-              message: 'Gemini API key is required for native Live Audio-to-Audio. Standard voice fallback will engage.',
-              canFallback: true,
+              message: 'Gemini API key is required. Please enter your Gemini API key in Settings > AI & API to use Live Audio-to-Audio.',
+              canFallback: false,
             }));
             return;
           }
@@ -975,12 +975,8 @@ ${recentHistory.length > 0 ? `7. Recent Conversation Context:\n${recentHistory.m
                     },
                   },
                 },
-                systemInstruction: {
-                  parts: [{ text: liveSystemPrompt }],
-                },
+                systemInstruction: liveSystemPrompt,
                 tools: toolsList,
-                inputAudioTranscription: {},
-                outputAudioTranscription: {},
               },
               callbacks: {
                 onopen: () => {
@@ -1048,12 +1044,12 @@ ${recentHistory.length > 0 ? `7. Recent Conversation Context:\n${recentHistory.m
                   }
                 },
                 onerror: (err: any) => {
-                  console.log('[ULTRON Live Server] Live channel notice, activating fallback handler.');
+                  console.warn('[ULTRON Live Server] Live channel error:', err?.message || err);
                   if (clientWs.readyState === WebSocket.OPEN) {
                     clientWs.send(JSON.stringify({
                       type: 'error',
-                      message: 'Live audio channel switched to standard voice pipeline.',
-                      canFallback: true,
+                      message: `Live channel issue: ${err?.message || 'Connection reset'}.`,
+                      canFallback: false,
                     }));
                   }
                 },
@@ -1072,11 +1068,11 @@ ${recentHistory.length > 0 ? `7. Recent Conversation Context:\n${recentHistory.m
               voice: 'Puck',
             }));
           } catch (liveErr: any) {
-            console.log('[ULTRON Live Server] Live stream channel unavailable; notifying client for standard engine fallback.');
+            console.error('[ULTRON Live Server] Live stream connection failed:', liveErr?.message || liveErr);
             clientWs.send(JSON.stringify({
               type: 'error',
-              message: 'Live audio channel unavailable. Operating in standard voice mode.',
-              canFallback: true,
+              message: `Live connection failed: ${liveErr?.message || 'Check Gemini API Key'}.`,
+              canFallback: false,
             }));
           }
         } else if (msg.type === 'audio') {
