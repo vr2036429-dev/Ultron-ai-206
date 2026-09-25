@@ -970,6 +970,7 @@ export default function App() {
             onSubmitCommand={(cmd, isVoice) => handleExecuteCommand(cmd, isVoice)}
             onDismissError={() => setVoiceErrorMessage(null)}
             onOpenSettings={() => setSettingsModalOpen(true)}
+            onRetry={handleToggleListening}
           />
         )}
 

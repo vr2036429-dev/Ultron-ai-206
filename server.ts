@@ -911,13 +911,13 @@ async function startServer() {
   server.on('upgrade', (request, socket, head) => {
     try {
       const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`);
-      if (url.pathname === '/api/live-voice') {
+      if (url.pathname === '/api/live-voice' || url.pathname === '/api/live-voice/' || url.pathname.startsWith('/api/live-voice')) {
         wss.handleUpgrade(request, socket, head, (ws) => {
           wss.emit('connection', ws, request);
         });
       }
     } catch (e) {
-      console.warn('Upgrade error:', e);
+      console.warn('[ULTRON Server] WebSocket upgrade error:', e);
     }
   });
 
@@ -939,12 +939,27 @@ async function startServer() {
 
           console.log(`[ULTRON Live Server] Initializing Live Audio-to-Audio session for ${userName}...`);
 
-          const ai = getGenAI(msg.apiKey);
-          if (!ai) {
-            console.warn('[ULTRON Live Server] No GEMINI_API_KEY detected. Informing client.');
+          const rawKey = (msg.apiKey || '').trim();
+          if (!rawKey) {
+            console.warn('[ULTRON Live Server] No API key passed in init. Informing client.');
             clientWs.send(JSON.stringify({
               type: 'error',
-              message: 'Gemini API key is required. Please enter your Gemini API key in Settings > AI & API to use Live Audio-to-Audio.',
+              code: 401,
+              reason: 'MISSING_API_KEY',
+              message: 'Pehle Settings mein API key daalein.',
+              canFallback: false,
+            }));
+            return;
+          }
+
+          const ai = getGenAI(rawKey);
+          if (!ai) {
+            console.warn('[ULTRON Live Server] Invalid Gemini API key. Informing client.');
+            clientWs.send(JSON.stringify({
+              type: 'error',
+              code: 401,
+              reason: 'INVALID_API_KEY',
+              message: 'Pehle Settings mein valid Gemini API key daalein.',
               canFallback: false,
             }));
             return;
@@ -1044,18 +1059,42 @@ ${recentHistory.length > 0 ? `7. Recent Conversation Context:\n${recentHistory.m
                   }
                 },
                 onerror: (err: any) => {
-                  console.warn('[ULTRON Live Server] Live channel error:', err?.message || err);
+                  const rawErr = err?.message || String(err);
+                  console.warn('[ULTRON Live Server] Live channel error:', rawErr);
                   if (clientWs.readyState === WebSocket.OPEN) {
                     clientWs.send(JSON.stringify({
                       type: 'error',
-                      message: `Live channel issue: ${err?.message || 'Connection reset'}.`,
+                      code: err?.code || 1006,
+                      reason: rawErr,
+                      message: `Live channel issue (Code: ${err?.code || '1006'}): ${rawErr || 'Connection reset by server'}`,
                       canFallback: false,
                     }));
                   }
                 },
-                onclose: () => {
-                  console.log('[ULTRON Live Server] Gemini Live session closed.');
+                onclose: (closeEvent?: any) => {
+                  const code = closeEvent?.code || (closeEvent as any)?.[Symbol.for('kCode')] || 1000;
+                  const reason = closeEvent?.reason || (closeEvent as any)?.[Symbol.for('kReason')] || '';
+                  console.warn(`[ULTRON Live Server] Gemini Live session closed. Code: ${code}, Reason: ${reason}`);
                   isSessionActive = false;
+
+                  if (code !== 1000 && clientWs.readyState === WebSocket.OPEN) {
+                    let userFriendlyMsg = `Gemini Live connection closed (Code: ${code}${reason ? `: ${reason}` : ''}).`;
+                    if (code === 1007 || reason.toLowerCase().includes('api key') || reason.toLowerCase().includes('not valid')) {
+                      userFriendlyMsg = `Invalid API Key (Code: ${code}): Pehle Settings mein valid Gemini API key daalein.`;
+                    } else if (reason.toLowerCase().includes('quota') || reason.toLowerCase().includes('resource_exhausted')) {
+                      userFriendlyMsg = `API Quota limit exceed ho gaya hai (Code: ${code}). Kuch der baad try karein ya doosri key use karein.`;
+                    } else if (reason.toLowerCase().includes('model') || reason.toLowerCase().includes('not found')) {
+                      userFriendlyMsg = `Model 'gemini-3.8-live' support nahi ho raha (Code: ${code}).`;
+                    }
+
+                    clientWs.send(JSON.stringify({
+                      type: 'error',
+                      code,
+                      reason,
+                      message: userFriendlyMsg,
+                      canFallback: false,
+                    }));
+                  }
                 },
               },
             });
@@ -1068,12 +1107,28 @@ ${recentHistory.length > 0 ? `7. Recent Conversation Context:\n${recentHistory.m
               voice: 'Puck',
             }));
           } catch (liveErr: any) {
-            console.error('[ULTRON Live Server] Live stream connection failed:', liveErr?.message || liveErr);
-            clientWs.send(JSON.stringify({
-              type: 'error',
-              message: `Live connection failed: ${liveErr?.message || 'Check Gemini API Key'}.`,
-              canFallback: false,
-            }));
+            const rawMsg = liveErr?.message || String(liveErr);
+            const status = liveErr?.status || liveErr?.statusCode || liveErr?.code || (rawMsg.includes('403') ? 403 : rawMsg.includes('429') ? 429 : rawMsg.includes('404') ? 404 : 500);
+            console.error('[ULTRON Live Server] Live stream connection failed:', { status, error: rawMsg });
+
+            let userMsg = `Live connection failed (HTTP/WS ${status}): ${rawMsg.slice(0, 120)}`;
+            if (status === 403 || rawMsg.includes('API key') || rawMsg.includes('API_KEY_INVALID')) {
+              userMsg = `Invalid API Key (HTTP 403): Pehle Settings mein valid Gemini API key daalein.`;
+            } else if (status === 429 || rawMsg.includes('quota') || rawMsg.includes('RESOURCE_EXHAUSTED')) {
+              userMsg = `API Quota limit exceed ho gaya hai (HTTP 429). Kuch der baad try karein ya doosri key use karein.`;
+            } else if (status === 404 || rawMsg.includes('not found')) {
+              userMsg = `Live Audio model nahi mila (HTTP 404). Model name 'gemini-3.8-live' check karein.`;
+            }
+
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({
+                type: 'error',
+                code: status,
+                reason: rawMsg,
+                message: userMsg,
+                canFallback: false,
+              }));
+            }
           }
         } else if (msg.type === 'audio') {
           // Stream raw 16kHz 16-bit PCM chunk to Gemini

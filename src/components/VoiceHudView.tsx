@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Mic, MicOff, Send, AlertTriangle, X } from 'lucide-react';
+import { Mic, MicOff, Send, AlertTriangle, X, RotateCcw } from 'lucide-react';
 import { UltronState } from '../types';
 import { UltronOrb } from './UltronOrb';
 
@@ -14,6 +14,7 @@ interface VoiceHudViewProps {
   onSubmitCommand: (command: string, isVoiceInput?: boolean) => void;
   onDismissError?: () => void;
   onOpenSettings?: () => void;
+  onRetry?: () => void;
 }
 
 export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
@@ -27,6 +28,7 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   onSubmitCommand,
   onDismissError,
   onOpenSettings,
+  onRetry,
 }) => {
   const [manualText, setManualText] = useState('');
 
@@ -81,6 +83,17 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
               <span className="text-[11px] leading-tight font-medium">{errorMessage}</span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 border border-cyan-500/40 text-[10px] font-bold transition-colors shadow-sm"
+                  title="Dobara connect try karein"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  RETRY
+                </button>
+              )}
               {errorMessage.toLowerCase().includes('key') && onOpenSettings && (
                 <button
                   type="button"
