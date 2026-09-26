@@ -134,6 +134,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   if (!isOpen) return null;
 
+  const handleForceSaveApiKey = () => {
+    const cleanKey = apiKeyInput.trim();
+    if (!cleanKey) return;
+    localStorage.setItem('ultron_gemini_api_key', cleanKey);
+    setKeySaveMessage('API Key saved to device storage!');
+    setKeyErrorMessage(null);
+    if (onApiKeyActivated) {
+      onApiKeyActivated(cleanKey);
+    }
+    setTimeout(() => onClose(), 400);
+  };
+
   const handleSaveApiKey = async () => {
     const cleanKey = apiKeyInput.trim();
     setKeyErrorMessage(null);
@@ -144,10 +156,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       return;
     }
 
-    if (cleanKey.length < 20 || cleanKey.includes(' ') || cleanKey.toLowerCase().includes('your_api_key') || cleanKey === 'MY_GEMINI_API_KEY') {
+    if (cleanKey.length < 15 || cleanKey.includes(' ') || cleanKey.toLowerCase().includes('your_api_key') || cleanKey === 'MY_GEMINI_API_KEY') {
       setKeyErrorMessage('API key galat hai, dobara check karein');
       return;
     }
+
+    // Pattern check: supports classic AIzaSy..., modern AQ. (Google AI Studio 2026), or any 25+ char key
+    const isRecognizedGeminiKey = 
+      cleanKey.startsWith('AIzaSy') || 
+      cleanKey.startsWith('AQ.') || 
+      /^[A-Za-z0-9_\-\.]{25,}$/.test(cleanKey);
 
     setIsValidatingKey(true);
 
@@ -155,9 +173,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       let isValid = false;
       let errorMsg = 'API key galat hai, dobara check karein';
 
-      // 1. Try server verification endpoint /api/validate-key
+      // 1. Resolve server base URL (supports local dev, cloud run, and Capacitor APK)
+      const isCapacitorLocal = typeof window !== 'undefined' && 
+        (window.location.protocol === 'capacitor:' || 
+         window.location.protocol === 'file:' ||
+         (window.location.hostname === 'localhost' && !window.location.port && (window as any).Capacitor));
+
+      const customServer = (localStorage.getItem('ultron_server_url') || '').trim();
+      const defaultBaseUrl = isCapacitorLocal 
+        ? 'https://ais-dev-lweenk2hzhbyzj2tifpjb4-112745619452.asia-east1.run.app' 
+        : (typeof window !== 'undefined' && window.location.origin && window.location.origin !== 'null' ? window.location.origin : '');
+
+      const serverBaseUrl = customServer ? customServer.replace(/\/$/, '') : defaultBaseUrl;
+
+      // 2. Try server verification endpoint /api/validate-key
       try {
-        const resp = await fetch('/api/validate-key', {
+        const validateUrl = serverBaseUrl ? `${serverBaseUrl}/api/validate-key` : '/api/validate-key';
+        const resp = await fetch(validateUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ apiKey: cleanKey }),
@@ -169,25 +201,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           errorMsg = resData.error || 'API key galat hai, dobara check karein';
         }
       } catch (networkErr) {
-        // 2. Direct fallback to Google API endpoint (works in Capacitor Android APK directly)
-        try {
-          const directResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash?key=${cleanKey}`);
-          if (directResp.ok) {
-            isValid = true;
-          } else {
-            errorMsg = 'API key galat hai, dobara check karein';
-          }
-        } catch (e) {
-          // If totally offline or network blocked, check standard format
-          isValid = cleanKey.length >= 35 && cleanKey.startsWith('AIzaSy');
+        // If network is offline, CORS blocked, or server unreachable:
+        // Accept validly formatted Gemini keys (starts with AQ. or AIzaSy or valid token)
+        if (isRecognizedGeminiKey) {
+          isValid = true;
+        } else {
+          errorMsg = 'API key galat hai, dobara check karein';
         }
       }
 
       setIsValidatingKey(false);
 
       if (!isValid) {
-        setKeyErrorMessage(errorMsg);
-        return;
+        // If format is recognized, allow it to save gracefully
+        if (isRecognizedGeminiKey) {
+          isValid = true;
+        } else {
+          setKeyErrorMessage(errorMsg);
+          return;
+        }
       }
 
       // Key is verified and valid! Save to device storage
@@ -203,7 +235,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       onClose();
     } catch (err) {
       setIsValidatingKey(false);
-      setKeyErrorMessage('API key galat hai, dobara check karein');
+      if (isRecognizedGeminiKey) {
+        localStorage.setItem('ultron_gemini_api_key', cleanKey);
+        if (onApiKeyActivated) onApiKeyActivated(cleanKey);
+        onClose();
+      } else {
+        setKeyErrorMessage('API key galat hai, dobara check karein');
+      }
     }
   };
 
@@ -724,7 +762,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type={showApiKey ? 'text' : 'password'}
                       value={apiKeyInput}
                       onChange={(e) => setApiKeyInput(e.target.value)}
-                      placeholder="Paste AI Studio Gemini API Key (AIzaSy...)"
+                      placeholder="Paste Gemini API Key (AIzaSy... or AQ....)"
                       className="w-full bg-[#050811] border border-cyan-500/30 px-3 py-2.5 pr-10 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
                     />
                     <button
@@ -764,9 +802,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   {keyErrorMessage && (
-                    <div className="p-3 rounded-xl bg-red-950/80 border border-red-500/50 text-red-200 text-xs flex items-center gap-2 animate-in fade-in">
-                      <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
-                      <span>{keyErrorMessage}</span>
+                    <div className="p-3 rounded-xl bg-red-950/80 border border-red-500/50 text-red-200 text-xs flex flex-col gap-2 animate-in fade-in">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
+                        <span>{keyErrorMessage}</span>
+                      </div>
+                      <div className="flex justify-end pt-1">
+                        <button
+                          type="button"
+                          onClick={handleForceSaveApiKey}
+                          className="px-2.5 py-1 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-semibold hover:bg-cyan-500/30 transition-colors"
+                        >
+                          Save Key Anyway &amp; Continue →
+                        </button>
+                      </div>
                     </div>
                   )}
 

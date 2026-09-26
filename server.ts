@@ -14,6 +14,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+// Universal CORS headers for Android Capacitor APK and web clients
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 
 // Initialize GoogleGenAI client lazily or when key is present (env or custom key)
@@ -461,8 +472,13 @@ app.post('/api/validate-key', async (req, res) => {
     const rawKey = req.body.apiKey || '';
     const cleanKey = typeof rawKey === 'string' ? rawKey.trim() : '';
 
-    if (!cleanKey || cleanKey.length < 20 || cleanKey.includes(' ') || cleanKey === 'MY_GEMINI_API_KEY') {
+    if (!cleanKey || cleanKey.length < 15 || cleanKey.includes(' ') || cleanKey === 'MY_GEMINI_API_KEY') {
       return res.status(400).json({ success: false, error: 'API key galat hai, dobara check karein' });
+    }
+
+    // Direct match with environment key
+    if (process.env.GEMINI_API_KEY && cleanKey === process.env.GEMINI_API_KEY) {
+      return res.json({ success: true, message: 'Gemini API Key valid & active' });
     }
 
     const ai = getGenAI(cleanKey);
