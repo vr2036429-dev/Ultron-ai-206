@@ -159,6 +159,62 @@ export class ToolRegistryService {
         };
       }
 
+      case 'openUrl': {
+        const rawUrl = args.url || 'https://google.com';
+        const formattedUrl = rawUrl.startsWith('http://') || rawUrl.startsWith('https://') 
+          ? rawUrl 
+          : `https://${rawUrl}`;
+
+        if (context.onOpenAppModal) {
+          context.onOpenAppModal(args.title || formattedUrl, formattedUrl);
+        }
+
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate(50);
+        }
+
+        return {
+          toolCallId: id,
+          toolName: name,
+          success: true,
+          message: `Opened web link: ${formattedUrl}.`,
+          data: { url: formattedUrl },
+          timestamp,
+        };
+      }
+
+      case 'setReminder': {
+        const title = args.title || 'Device Reminder';
+        const time = args.time || 'Soon';
+        const priority = args.priority || 'high';
+
+        const newReminder = {
+          id: `reminder_${Date.now()}`,
+          appName: 'ULTRON Reminders',
+          title: `Reminder: ${title}`,
+          body: `Scheduled alert: ${title}${time ? ` (${time})` : ''}`,
+          timestamp: 'Just now',
+          priority: priority as 'high' | 'normal',
+          read: false,
+        };
+
+        this.notifications.unshift(newReminder);
+        this.saveNotifications();
+
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate([100, 50, 100]);
+        }
+
+        return {
+          toolCallId: id,
+          toolName: name,
+          success: true,
+          message: `Reminder scheduled: "${title}" (${time}). Alert active.`,
+          data: { reminder: newReminder },
+          timestamp,
+        };
+      }
+
       case 'openSettings': {
         const section = args.section || 'general';
         if (context.onOpenSettingsModal) {

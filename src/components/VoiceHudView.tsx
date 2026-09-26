@@ -10,6 +10,7 @@ interface VoiceHudViewProps {
   transcription: string;
   assistantResponseText: string;
   errorMessage?: string | null;
+  toolExecutionNotice?: string | null;
   onToggleListening: () => void;
   onSubmitCommand: (command: string, isVoiceInput?: boolean) => void;
   onDismissError?: () => void;
@@ -24,6 +25,7 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   transcription,
   assistantResponseText,
   errorMessage,
+  toolExecutionNotice,
   onToggleListening,
   onSubmitCommand,
   onDismissError,
@@ -40,10 +42,11 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   };
 
   const getStatusLabel = () => {
+    if (toolExecutionNotice) return toolExecutionNotice;
     if (state === 'USER_SPEAKING' || (isListening && transcription)) return 'User Speaking...';
     if (state === 'AI_SPEAKING' || state === 'SPEAKING' || isSpeaking) return 'ULTRON Speaking (24kHz)...';
     if (state === 'PROCESSING' || state === 'THINKING') return 'Processing Directive...';
-    if (state === 'LISTENING' || isListening) return 'Listening (16kHz PCM)...';
+    if (state === 'LISTENING' || isListening) return 'Connected / Ready (16kHz PCM)';
     if (state === 'INTERRUPTED') return 'Interrupted (Barge-In)';
     if (state === 'RECONNECTING') return 'Reconnecting Live Stream...';
     return 'Standby / Live Voice Ready';
@@ -67,10 +70,22 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
           size={290}
         />
 
-        {/* Status Text: "Standby / Live Voice Ready" */}
-        <div className="mt-5 flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#070b14]/80 border border-cyan-500/20 backdrop-blur shadow-[0_0_15px_rgba(6,182,212,0.12)]">
-          <span className={`w-2 h-2 rounded-full ${isListening ? 'bg-cyan-400 animate-ping' : isSpeaking ? 'bg-emerald-400 animate-pulse' : 'bg-cyan-500/80'}`} />
-          <span className="text-xs font-mono-code text-cyan-300 font-medium tracking-wider">
+        {/* Status Text: "Connected / Ready" or Tool execution notice */}
+        <div className={`mt-5 flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#070b14]/80 border ${
+          toolExecutionNotice 
+            ? (toolExecutionNotice.startsWith('✕') ? 'border-red-500/40' : 'border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.2)]')
+            : (isListening ? 'border-cyan-400/40 shadow-[0_0_15px_rgba(6,182,212,0.25)]' : 'border-cyan-500/20')
+        } backdrop-blur shadow-[0_0_15px_rgba(6,182,212,0.12)] transition-all`}>
+          <span className={`w-2 h-2 rounded-full ${
+            toolExecutionNotice 
+              ? (toolExecutionNotice.startsWith('✕') ? 'bg-red-400' : 'bg-emerald-400 animate-pulse')
+              : (isListening ? 'bg-cyan-400 animate-ping' : isSpeaking ? 'bg-emerald-400 animate-pulse' : 'bg-cyan-500/80')
+          }`} />
+          <span className={`text-xs font-mono-code ${
+            toolExecutionNotice
+              ? (toolExecutionNotice.startsWith('✕') ? 'text-red-300' : 'text-emerald-300 font-bold')
+              : (isListening ? 'text-cyan-200 font-semibold' : 'text-cyan-300 font-medium')
+          } tracking-wider`}>
             {getStatusLabel()}
           </span>
         </div>

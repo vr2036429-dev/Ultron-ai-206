@@ -471,6 +471,7 @@ export class LiveVoiceSession {
   private callbacks: LiveVoiceCallbacks | null = null;
 
   private isConnected = false;
+  private isConnecting = false;
   private sessionActive = false;
   private currentSpokenUserText = '';
   private currentAssistantSpokenText = '';
@@ -481,6 +482,20 @@ export class LiveVoiceSession {
 
   private constructor() {
     this.setupVadHandlers();
+  }
+
+  // Safe WebSocket send method: guarantees no Uncaught InvalidStateError
+  public safeSend(payload: object | string): boolean {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      try {
+        const str = typeof payload === 'string' ? payload : JSON.stringify(payload);
+        this.socket.send(str);
+        return true;
+      } catch (err) {
+        console.warn('[LiveVoiceSession] safeSend ignored exception:', err);
+      }
+    }
+    return false;
   }
 
   public static getInstance(): LiveVoiceSession {
@@ -545,9 +560,7 @@ export class LiveVoiceSession {
       this.setState('INTERRUPTED');
 
       // 3. Inform server WebSocket of barge-in
-      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-        this.socket.send(JSON.stringify({ type: 'interrupt' }));
-      }
+      this.safeSend({ type: 'interrupt' });
     };
   }
 
@@ -583,12 +596,19 @@ export class LiveVoiceSession {
       return false;
     }
 
-    try {
-      if (this.sessionActive) {
-        console.log('[LiveVoiceSession] Session already active.');
-        return true;
-      }
+    if (this.isConnecting) {
+      console.log('[LiveVoiceSession] Session connection already in progress, skipping concurrent duplicate.');
+      return false;
+    }
 
+    if (this.sessionActive && this.socket && this.socket.readyState === WebSocket.OPEN) {
+      console.log('[LiveVoiceSession] Session already open and active.');
+      return true;
+    }
+
+    this.isConnecting = true;
+
+    try {
       this.setState('RECONNECTING');
 
       // 2. Pre-warm and unlock audio output manager
@@ -605,6 +625,18 @@ export class LiveVoiceSession {
         }
       });
 
+      // Cleanup any pre-existing socket before opening a new one
+      if (this.socket) {
+        try {
+          this.socket.onopen = null;
+          this.socket.onerror = null;
+          this.socket.onclose = null;
+          this.socket.onmessage = null;
+          this.socket.close();
+        } catch (e) {}
+        this.socket = null;
+      }
+
       // 3. Resolve Target WebSocket Host (Capacitor Android APK vs Browser)
       const isCapacitorLocal = typeof window !== 'undefined' && 
         (window.location.protocol === 'capacitor:' || 
@@ -613,37 +645,43 @@ export class LiveVoiceSession {
       const customServer = (localStorage.getItem('ultron_server_url') || '').trim();
       const defaultHost = isCapacitorLocal 
         ? 'ais-dev-lweenk2hzhbyzj2tifpjb4-112745619452.asia-east1.run.app' 
-        : window.location.host;
+        : (window.location.host || 'localhost:3000');
 
       const targetHost = customServer 
         ? customServer.replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '').replace(/\/$/, '') 
         : defaultHost;
 
-      const wsProtocol = (window.location.protocol === 'https:' || isCapacitorLocal || (targetHost && !targetHost.includes('localhost'))) ? 'wss:' : 'ws:';
+      // Always match current page security protocol; never force wss on unencrypted local http
+      let wsProtocol = 'ws:';
+      if (typeof window !== 'undefined') {
+        if (window.location.protocol === 'https:') {
+          wsProtocol = 'wss:';
+        } else if (isCapacitorLocal || (customServer && customServer.startsWith('https:'))) {
+          wsProtocol = 'wss:';
+        } else {
+          wsProtocol = 'ws:';
+        }
+      }
+
       const wsUrl = `${wsProtocol}//${targetHost}/api/live-voice`;
       console.log(`[LiveVoiceSession] Connecting WebSocket to ${wsUrl}...`);
 
-      this.socket = new WebSocket(wsUrl);
+      const currentWs = new WebSocket(wsUrl);
+      this.socket = currentWs;
 
       await new Promise<void>((resolve, reject) => {
         let isDone = false;
         const connectionTimeout = setTimeout(() => {
           if (!isDone) {
             isDone = true;
-            try { this.socket?.close(); } catch (e) {}
+            try { currentWs.close(); } catch (e) {}
             const err = new Error(`Connection timed out (URL: ${wsUrl}). Server se connect nahi ho paya.`);
-            console.error('[LiveVoiceSession] Handshake timed out:', err);
+            console.warn('[LiveVoiceSession] Handshake timed out:', err.message);
             reject(err);
           }
         }, 8000);
 
-        if (!this.socket) {
-          clearTimeout(connectionTimeout);
-          reject(new Error('WebSocket initialization failed'));
-          return;
-        }
-
-        this.socket.onopen = () => {
+        currentWs.onopen = () => {
           if (isDone) return;
           isDone = true;
           clearTimeout(connectionTimeout);
@@ -651,29 +689,35 @@ export class LiveVoiceSession {
           this.reconnectAttempts = 0;
           console.log('[LiveVoiceSession] WebSocket connected successfully. Initializing Live Audio session with model: gemini-3.8-live...');
 
-          this.socket?.send(
-            JSON.stringify({
-              type: 'init',
-              apiKey: savedApiKey,
-              userName: options.userName,
-              memoryContext: options.memoryContext || {},
-              recentHistory: (options.recentHistory || []).slice(-6),
-            })
-          );
+          if (currentWs.readyState === WebSocket.OPEN) {
+            try {
+              currentWs.send(
+                JSON.stringify({
+                  type: 'init',
+                  apiKey: savedApiKey,
+                  userName: options.userName,
+                  memoryContext: options.memoryContext || {},
+                  recentHistory: (options.recentHistory || []).slice(-6),
+                })
+              );
+            } catch (sendErr) {
+              console.warn('[LiveVoiceSession] Failed to send init payload:', sendErr);
+            }
+          }
           resolve();
         };
 
-        this.socket.onerror = (errEvent: Event) => {
-          console.error('[LiveVoiceSession] WebSocket onerror triggered. Event details:', errEvent, 'ReadyState:', this.socket?.readyState);
+        currentWs.onerror = (errEvent: Event) => {
+          const stateCode = currentWs?.readyState ?? -1;
+          console.warn('[LiveVoiceSession] WebSocket connection notice. ReadyState:', stateCode);
           if (isDone) return;
           isDone = true;
           clearTimeout(connectionTimeout);
-          const stateCode = this.socket?.readyState ?? -1;
           const stateName = stateCode === 3 ? 'CLOSED (3)' : stateCode === 2 ? 'CLOSING (2)' : stateCode === 0 ? 'CONNECTING (0)' : `${stateCode}`;
           reject(new Error(`Server se WebSocket connection nahi ban paya (State: ${stateName}, Host: ${targetHost}). Network check karke "Retry" karein.`));
         };
 
-        this.socket.onclose = (closeEvent: CloseEvent) => {
+        currentWs.onclose = (closeEvent: CloseEvent) => {
           console.warn('[LiveVoiceSession] WebSocket closed during handshake:', { code: closeEvent.code, reason: closeEvent.reason, wasClean: closeEvent.wasClean });
           if (isDone) return;
           isDone = true;
@@ -692,15 +736,11 @@ export class LiveVoiceSession {
         const isAiSpeaking = this.outputManager.isPlaying();
         this.vad.processAudioChunk(rms, isAiSpeaking);
 
-        // Stream audio chunk to server
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-          this.socket.send(
-            JSON.stringify({
-              type: 'audio',
-              data: base64Pcm,
-            })
-          );
-        }
+        // Stream audio chunk safely to server
+        this.safeSend({
+          type: 'audio',
+          data: base64Pcm,
+        });
       });
 
       this.sessionActive = true;
@@ -712,20 +752,41 @@ export class LiveVoiceSession {
                            err?.message?.toLowerCase().includes('permission') || 
                            err?.message?.toLowerCase().includes('denied');
       console.warn('[LiveVoiceSession] Live session initialization notice:', err?.message || err);
-      this.setState('STOPPED');
       this.stopSession();
 
       const errMsg = isPermDenied
         ? 'Microphone permission denied. Kripya device ya browser settings mein Microphone allow karein.'
         : (err?.message || 'Live Audio session connect nahi ho paya.');
 
+      if (isPermDenied) {
+        this.setState('STOPPED');
+        this.callbacks?.onError(errMsg, false);
+        return false;
+      }
+
+      // Silent reconnect attempt up to 3 times before showing red error banner
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        this.attemptReconnect();
+        return false;
+      }
+
+      this.setState('STOPPED');
       this.callbacks?.onError(errMsg, false);
       return false;
+    } finally {
+      this.isConnecting = false;
     }
+  }
+
+  // Check if session is currently connected and active
+  public isActive(): boolean {
+    return this.sessionActive && this.isConnected;
   }
 
   // Explicit Retry trigger
   public async retry(): Promise<boolean> {
+    console.log('[LiveVoiceSession] Manual retry initiated...');
+    this.reconnectAttempts = 0;
     this.stopSession();
     if (this.lastSessionOptions) {
       return this.startSession(this.lastSessionOptions);
@@ -788,17 +849,13 @@ export class LiveVoiceSession {
             const result = await toolRegistry.executeTool(call);
             this.callbacks?.onToolExecuted(call, result);
 
-            // Report output back to Gemini Live
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-              this.socket.send(
-                JSON.stringify({
-                  type: 'toolResponse',
-                  callId: call.id,
-                  name: call.name,
-                  output: result.data || { message: result.message, success: result.success },
-                })
-              );
-            }
+            // Report output back to Gemini Live safely
+            this.safeSend({
+              type: 'toolResponse',
+              callId: call.id,
+              name: call.name,
+              output: result.data || { message: result.message, success: result.success },
+            });
           }
         } else if (msg.type === 'error') {
           console.error('[LiveVoiceSession] Server error event received:', msg);
@@ -820,25 +877,27 @@ export class LiveVoiceSession {
         reason: closeEvent.reason,
         wasClean: closeEvent.wasClean,
       });
-      const wasConnected = this.isConnected;
       this.isConnected = false;
 
-      if (this.sessionActive && wasConnected) {
-        if (closeEvent.code === 1007 || closeEvent.code === 401 || closeEvent.code === 403) {
-          console.warn('[LiveVoiceSession] Auth/Key credential error detected; stopping session.');
-          this.setState('STOPPED');
-          this.stopSession();
-          this.callbacks?.onError(`Invalid API Key (Code: ${closeEvent.code}). Pehle Settings mein valid Gemini API key daalein.`, false);
-        } else {
-          this.attemptReconnect();
-        }
+      if (closeEvent.code === 1007 || closeEvent.code === 401 || closeEvent.code === 403) {
+        console.warn('[LiveVoiceSession] Auth/Key credential error detected; stopping session.');
+        this.setState('STOPPED');
+        this.stopSession();
+        this.callbacks?.onError(`Invalid API Key (Code: ${closeEvent.code}). Pehle Settings mein valid Gemini API key daalein.`, false);
+        return;
+      }
+
+      // Silent reconnect attempt up to 3 times before displaying error banner
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        this.attemptReconnect();
       } else {
         this.stopSession();
+        this.setState('STOPPED');
         if (closeEvent.code !== 1000) {
           const codeStr = closeEvent.code ? `WS Code: ${closeEvent.code}` : 'WS Code: 1006';
           const reasonStr = closeEvent.reason ? `, ${closeEvent.reason}` : '';
           this.callbacks?.onError(
-            `Live stream disconnect ho gaya (${codeStr}${reasonStr}). "Retry" dabayein ya internet check karein.`,
+            `Live voice connection drop ho gaya (${codeStr}${reasonStr}). Network check karke "Retry" karein.`,
             false
           );
         }
@@ -846,27 +905,27 @@ export class LiveVoiceSession {
     };
 
     this.socket.onerror = (err: Event) => {
-      console.error('[LiveVoiceSession] Socket channel error event:', err, 'ReadyState:', this.socket?.readyState);
+      const stateCode = (err.target as WebSocket)?.readyState ?? this.socket?.readyState ?? -1;
+      console.warn('[LiveVoiceSession] Socket channel notice event. ReadyState:', stateCode);
     };
   }
 
   private attemptReconnect() {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      const delay = Math.pow(2, this.reconnectAttempts) * 1000;
-      console.log(`[LiveVoiceSession] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+      const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 4000);
+      console.log(`[LiveVoiceSession] Silent reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms...`);
       this.setState('RECONNECTING');
 
       setTimeout(() => {
-        if (this.sessionActive && this.lastSessionOptions) {
-          this.startSession(this.lastSessionOptions).catch((err) => {
-            console.warn('[LiveVoiceSession] Reconnect attempt failed:', err);
-          });
-        }
+        const options = this.lastSessionOptions || { userName: 'Asik' };
+        this.startSession(options).catch((err) => {
+          console.warn('[LiveVoiceSession] Silent reconnect attempt failed:', err);
+        });
       }, delay);
     } else {
       this.setState('STOPPED');
-      this.callbacks?.onError('Live voice connection lost. Tap Orb or Mic to reconnect.', false);
+      this.callbacks?.onError('Live voice connection lost. "Retry" dabayein ya internet check karein.', false);
       this.stopSession();
     }
   }
@@ -888,11 +947,7 @@ export class LiveVoiceSession {
   // Barge-in interruption: immediately halt AI playback and alert backend
   public interrupt() {
     this.outputManager.stopCurrentPlayback();
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      try {
-        this.socket.send(JSON.stringify({ type: 'interrupt' }));
-      } catch (e) {}
-    }
+    this.safeSend({ type: 'interrupt' });
     this.setState('INTERRUPTED');
     console.log('[LiveVoiceSession] Assistant playback interrupted (barge-in executed).');
   }
@@ -914,9 +969,11 @@ export class LiveVoiceSession {
 
     if (this.socket) {
       try {
-        if (this.socket.readyState === WebSocket.OPEN) {
-          this.socket.send(JSON.stringify({ type: 'close' }));
-        }
+        this.safeSend({ type: 'close' });
+        this.socket.onopen = null;
+        this.socket.onerror = null;
+        this.socket.onclose = null;
+        this.socket.onmessage = null;
         this.socket.close();
       } catch (e) {}
       this.socket = null;

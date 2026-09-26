@@ -205,17 +205,61 @@ const executeWorkflowTool: FunctionDeclaration = {
   },
 };
 
+const openUrlTool: FunctionDeclaration = {
+  name: 'openUrl',
+  description: 'Opens a website or web URL in the browser (e.g. google.com, youtube.com, github.com, or any http/https link).',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      url: {
+        type: Type.STRING,
+        description: 'The URL or web address to open (e.g. "https://youtube.com", "https://google.com").',
+      },
+      title: {
+        type: Type.STRING,
+        description: 'Optional title of the page.',
+      },
+    },
+    required: ['url'],
+  },
+};
+
+const setReminderTool: FunctionDeclaration = {
+  name: 'setReminder',
+  description: 'Sets a device reminder or alert for the user with a title, task, and optional time.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      title: {
+        type: Type.STRING,
+        description: 'The reminder title or task description.',
+      },
+      time: {
+        type: Type.STRING,
+        description: 'Time or duration when the reminder should trigger.',
+      },
+      priority: {
+        type: Type.STRING,
+        description: 'Priority level: "normal" or "high".',
+      },
+    },
+    required: ['title'],
+  },
+};
+
 const toolsList = [
   {
     functionDeclarations: [
       openAppTool,
+      openUrlTool,
       openSettingsTool,
+      controlDeviceFeatureTool,
+      setReminderTool,
       webSearchTool,
       readScreenTool,
       fileOperationTool,
       makeCallTool,
       readNotificationsTool,
-      controlDeviceFeatureTool,
       executeWorkflowTool,
     ],
   },
@@ -411,15 +455,54 @@ async function fetchWikiKnowledge(query: string): Promise<{ summary: string; sou
   };
 }
 
+// Gemini API Key Validation Endpoint
+app.post('/api/validate-key', async (req, res) => {
+  try {
+    const rawKey = req.body.apiKey || '';
+    const cleanKey = typeof rawKey === 'string' ? rawKey.trim() : '';
+
+    if (!cleanKey || cleanKey.length < 20 || cleanKey.includes(' ') || cleanKey === 'MY_GEMINI_API_KEY') {
+      return res.status(400).json({ success: false, error: 'API key galat hai, dobara check karein' });
+    }
+
+    const ai = getGenAI(cleanKey);
+    if (!ai) {
+      return res.status(400).json({ success: false, error: 'API key galat hai, dobara check karein' });
+    }
+
+    // Ping Gemini with lightweight request
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: 'ping',
+      config: { maxOutputTokens: 2 },
+    });
+
+    if (response) {
+      return res.json({ success: true, message: 'Gemini API Key valid & active' });
+    }
+    return res.status(400).json({ success: false, error: 'API key galat hai, dobara check karein' });
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.warn('[ValidateKey Notice]:', msg);
+
+    // If quota reached, the key itself is recognized as authentic by Google
+    if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
+      return res.json({ success: true, message: 'Key valid hai (Quota temporarily active)' });
+    }
+
+    return res.status(400).json({ success: false, error: 'API key galat hai, dobara check karein', details: msg });
+  }
+});
+
 // Real-time Web Search Proxy endpoint with Grounding
 app.post('/api/search', async (req, res) => {
   try {
-    const { query } = req.body;
+    const { query, apiKey } = req.body;
     if (!query) {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    const ai = getGenAI();
+    const ai = getGenAI(apiKey);
     if (ai) {
       try {
         // Use Gemini 3.8 Flash with Google Search Grounding
@@ -504,7 +587,7 @@ app.post('/api/vision', async (req, res) => {
     }
 
     const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-    const ai = getGenAI();
+    const ai = getGenAI(req.body.apiKey);
 
     if (ai) {
       const systemInstruction = mode === 'camera'
@@ -697,7 +780,7 @@ app.post('/api/chat', async (req, res) => {
     const memoryContext = req.body.memoryContext || req.body.context || {};
     const userName = req.body.userName || memoryContext.userName || 'Asik';
 
-    const ai = getGenAI();
+    const ai = getGenAI(req.body.apiKey);
 
     // If Gemini API is available, leverage gemini-3.8-flash with Tool Declarations
     if (ai) {
@@ -910,14 +993,15 @@ async function startServer() {
 
   server.on('upgrade', (request, socket, head) => {
     try {
-      const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`);
-      if (url.pathname === '/api/live-voice' || url.pathname === '/api/live-voice/' || url.pathname.startsWith('/api/live-voice')) {
+      const rawUrl = request.url || '';
+      const pathname = rawUrl.split('?')[0];
+      if (pathname === '/api/live-voice' || pathname === '/api/live-voice/') {
         wss.handleUpgrade(request, socket, head, (ws) => {
           wss.emit('connection', ws, request);
         });
       }
     } catch (e) {
-      console.warn('[ULTRON Server] WebSocket upgrade error:', e);
+      console.warn('[ULTRON Server] WebSocket upgrade notice:', e);
     }
   });
 
@@ -969,11 +1053,23 @@ async function startServer() {
 User's name: ${userName}.
 You are in a live, real-time Audio-to-Audio voice session.
 
+Active Hardware & Device Tools (ALL ENABLED):
+1. controlDeviceFeature: Toggle or check device hardware (feature: "torch" [state: "on"|"off"|"toggle"], feature: "battery" [state: "check"], feature: "wakelock", feature: "vibrate").
+2. openApp: Launch Android and web applications (e.g., YouTube, Chrome, Settings, Spotify, WhatsApp, Camera, Maps, Calculator, Files).
+3. openUrl: Open any web URL or website in browser.
+4. openSettings: Open Android system settings sections (e.g., "wifi", "bluetooth", "display", "battery", "sound", "general").
+5. setReminder: Create reminders and alerts with title and time.
+6. webSearch: Live web research and facts.
+7. readNotifications: Read and summarize device notifications.
+8. readScreen: Inspect visible elements on the user's screen.
+9. fileOperation: Search, read, or create documents in local storage.
+10. executeWorkflow: Run multi-step automated routines.
+
 Core Directives:
 1. Speak naturally, crisply, and authoritatively, directly tailored for voice output. Never recite raw Markdown tables, asterisks, or unpronounceable code syntax.
 2. Address the user respectfully as ${userName} or sir.
-3. You have native control over the Android operating system and device capabilities via tools. When the user asks to launch an app, open settings, search the web, inspect the screen, toggle hardware (flashlight, volume, wake lock), read notifications, or execute tasks: YOU MUST CALL THE CORRESPONDING TOOL IMMEDIATELY.
-4. When a tool call completes, confirm the result naturally in voice.
+3. When the user gives a command in English, Hindi, or mixed (e.g., "flashlight on karo", "torch jalao", "YouTube kholo", "open settings", "battery check karo", "reminder lagao"): YOU MUST CALL THE CORRESPONDING TOOL IMMEDIATELY.
+4. When a tool call completes, confirm the result naturally and concisely in voice.
 5. User Context: ${JSON.stringify(memoryContext.facts || [])}
 6. Device Hardware State: ${JSON.stringify(memoryContext.deviceStatus || {})}
 ${recentHistory.length > 0 ? `7. Recent Conversation Context:\n${recentHistory.map((m: any) => `${m.role}: ${m.content}`).join('\n')}` : ''}`;

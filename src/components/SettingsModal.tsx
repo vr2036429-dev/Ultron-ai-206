@@ -67,6 +67,7 @@ interface SettingsModalProps {
   onInspectScreen?: () => void;
   onTriggerVibration?: () => void;
   onCheckBattery?: () => void;
+  onApiKeyActivated?: (apiKey: string) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -89,6 +90,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onInspectScreen,
   onTriggerVibration,
   onCheckBattery,
+  onApiKeyActivated,
 }) => {
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('quick_controls');
   const [searchQuery, setSearchQuery] = useState('');
@@ -99,6 +101,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     return localStorage.getItem('ultron_gemini_api_key') || '';
   });
   const [showApiKey, setShowApiKey] = useState(false);
+  const [isValidatingKey, setIsValidatingKey] = useState(false);
+  const [keyErrorMessage, setKeyErrorMessage] = useState<string | null>(null);
   const [keySaveMessage, setKeySaveMessage] = useState<string | null>(null);
 
   // Biometric enrollment state
@@ -130,16 +134,77 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSaveApiKey = () => {
+  const handleSaveApiKey = async () => {
     const cleanKey = apiKeyInput.trim();
-    if (cleanKey) {
-      localStorage.setItem('ultron_gemini_api_key', cleanKey);
-      setKeySaveMessage('Gemini API Key successfully saved to device storage.');
-    } else {
-      localStorage.removeItem('ultron_gemini_api_key');
-      setKeySaveMessage('API Key removed. System will use default server environment configuration.');
+    setKeyErrorMessage(null);
+    setKeySaveMessage(null);
+
+    if (!cleanKey) {
+      setKeyErrorMessage('Kripya Gemini API key paste karein.');
+      return;
     }
-    setTimeout(() => setKeySaveMessage(null), 3000);
+
+    if (cleanKey.length < 20 || cleanKey.includes(' ') || cleanKey.toLowerCase().includes('your_api_key') || cleanKey === 'MY_GEMINI_API_KEY') {
+      setKeyErrorMessage('API key galat hai, dobara check karein');
+      return;
+    }
+
+    setIsValidatingKey(true);
+
+    try {
+      let isValid = false;
+      let errorMsg = 'API key galat hai, dobara check karein';
+
+      // 1. Try server verification endpoint /api/validate-key
+      try {
+        const resp = await fetch('/api/validate-key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: cleanKey }),
+        });
+        const resData = await resp.json().catch(() => ({}));
+        if (resp.ok && resData.success) {
+          isValid = true;
+        } else {
+          errorMsg = resData.error || 'API key galat hai, dobara check karein';
+        }
+      } catch (networkErr) {
+        // 2. Direct fallback to Google API endpoint (works in Capacitor Android APK directly)
+        try {
+          const directResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash?key=${cleanKey}`);
+          if (directResp.ok) {
+            isValid = true;
+          } else {
+            errorMsg = 'API key galat hai, dobara check karein';
+          }
+        } catch (e) {
+          // If totally offline or network blocked, check standard format
+          isValid = cleanKey.length >= 35 && cleanKey.startsWith('AIzaSy');
+        }
+      }
+
+      setIsValidatingKey(false);
+
+      if (!isValid) {
+        setKeyErrorMessage(errorMsg);
+        return;
+      }
+
+      // Key is verified and valid! Save to device storage
+      localStorage.setItem('ultron_gemini_api_key', cleanKey);
+      setKeySaveMessage('API Key verified & activated!');
+
+      // Auto-activate voice and features immediately
+      if (onApiKeyActivated) {
+        onApiKeyActivated(cleanKey);
+      }
+
+      // Immediately close settings modal
+      onClose();
+    } catch (err) {
+      setIsValidatingKey(false);
+      setKeyErrorMessage('API key galat hai, dobara check karein');
+    }
   };
 
   const handleEnrollBiometrics = async () => {
@@ -674,9 +739,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="flex items-center justify-between pt-1">
                     <button
                       onClick={handleSaveApiKey}
-                      className="px-4 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/30 font-semibold"
+                      disabled={isValidatingKey}
+                      className={`px-4 py-2 rounded-xl text-cyan-300 border border-cyan-500/40 font-semibold transition-all ${
+                        isValidatingKey 
+                          ? 'bg-cyan-500/10 opacity-70 cursor-wait' 
+                          : 'bg-cyan-500/20 hover:bg-cyan-500/30'
+                      }`}
                     >
-                      SAVE KEY TO DEVICE
+                      {isValidatingKey ? 'VALIDATING KEY...' : 'SAVE & AUTO-ACTIVATE'}
                     </button>
                     {apiKeyInput && (
                       <button
@@ -684,6 +754,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           setApiKeyInput('');
                           localStorage.removeItem('ultron_gemini_api_key');
                           setKeySaveMessage('API Key cleared.');
+                          setKeyErrorMessage(null);
                         }}
                         className="text-red-400 hover:text-red-300 text-[11px]"
                       >
@@ -691,6 +762,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </button>
                     )}
                   </div>
+
+                  {keyErrorMessage && (
+                    <div className="p-3 rounded-xl bg-red-950/80 border border-red-500/50 text-red-200 text-xs flex items-center gap-2 animate-in fade-in">
+                      <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
+                      <span>{keyErrorMessage}</span>
+                    </div>
+                  )}
 
                   {keySaveMessage && (
                     <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px]">

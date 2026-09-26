@@ -148,6 +148,8 @@ export default function App() {
 
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [voiceLockModalOpen, setVoiceLockModalOpen] = useState(false);
+  const [toolExecutionNotice, setToolExecutionNotice] = useState<string | null>(null);
+  const toolNoticeTimerRef = useRef<any>(null);
 
   // Workflow state
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
@@ -767,16 +769,34 @@ export default function App() {
       },
       onToolExecuted: (toolCall: ToolCall, result: ToolResult) => {
         console.log('[Live Voice Engine] Executed tool in live session:', toolCall.name, result);
+        const sign = result.success ? '✓' : '✕';
+        const cleanMsg = result.message || `${toolCall.name} complete`;
+        setToolExecutionNotice(`${sign} ${cleanMsg}`);
+        if (toolNoticeTimerRef.current) clearTimeout(toolNoticeTimerRef.current);
+        toolNoticeTimerRef.current = setTimeout(() => setToolExecutionNotice(null), 5000);
+
         if (toolCall.name === 'openApp') {
           const appName = toolCall.args.appName || 'Application';
-          setAppWindowModal({ isOpen: true, appName });
+          setAppWindowModal({ isOpen: true, appName, actionParam: toolCall.args.actionParam });
+        } else if (toolCall.name === 'openUrl') {
+          const url = toolCall.args.url || 'https://google.com';
+          setAppWindowModal({ isOpen: true, appName: toolCall.args.title || url, actionParam: url });
         } else if (toolCall.name === 'openSettings') {
           const section = toolCall.args.section || 'General';
           setAppWindowModal({ isOpen: true, appName: `Settings: ${section}` });
-        } else if (toolCall.name === 'controlDeviceFeature' && toolCall.args.feature === 'torch') {
-          setDeviceStatus((prev) => ({ ...prev, torchOn: !prev.torchOn }));
+        } else if (toolCall.name === 'controlDeviceFeature') {
+          if (toolCall.args.feature === 'torch') {
+            setDeviceStatus((prev) => ({ 
+              ...prev, 
+              torchOn: toolCall.args.state === 'on' ? true : toolCall.args.state === 'off' ? false : !prev.torchOn 
+            }));
+          } else if (toolCall.args.feature === 'wakelock') {
+            setDeviceStatus((prev) => ({ ...prev, screenAwake: !prev.screenAwake }));
+          }
         } else if (toolCall.name === 'fileOperation') {
           setStoredFiles([...toolRegistry.getFiles()]);
+        } else if (toolCall.name === 'setReminder') {
+          setStoredNotifs([...toolRegistry.getNotifications()]);
         }
 
         setMessages((prev) => [
@@ -800,6 +820,83 @@ export default function App() {
       },
     });
   }, [handleExecuteCommand]);
+
+  // Handler for immediate auto-activation upon API key save
+  const handleApiKeyActivated = useCallback(async (key: string) => {
+    console.log('[ULTRON] API key saved & activated. Auto-activating Live Voice & tools...');
+    setVoiceErrorMessage(null);
+    setToolExecutionNotice('✓ Gemini Key Active: Connected / Ready');
+    if (toolNoticeTimerRef.current) clearTimeout(toolNoticeTimerRef.current);
+    toolNoticeTimerRef.current = setTimeout(() => setToolExecutionNotice(null), 4000);
+    setState('LISTENING');
+
+    try {
+      await liveVoiceSession.unlockAudio();
+      liveVoiceSession.setSensitivity(preferences.vadSensitivity || 3);
+      const started = await liveVoiceSession.startSession({
+        userName: preferences.userName,
+        memoryContext: {
+          facts: memoryService.getContextFacts(),
+          deviceStatus,
+        },
+        recentHistory: messagesRef.current,
+      });
+
+      if (started) {
+        setIsListening(true);
+        setState('LISTENING');
+      }
+    } catch (e) {
+      console.warn('[ULTRON] Auto-start session notice:', e);
+    }
+  }, [preferences.userName, preferences.vadSensitivity, deviceStatus]);
+
+  // Auto-reconnect when app opens or returns from background with saved valid key
+  useEffect(() => {
+    const checkAndAutoConnect = async () => {
+      const savedKey = (localStorage.getItem('ultron_gemini_api_key') || '').trim();
+      if (savedKey && savedKey.length >= 20 && !savedKey.includes(' ') && savedKey !== 'MY_GEMINI_API_KEY') {
+        if (!liveVoiceSession.isActive()) {
+          console.log('[ULTRON] Auto-reconnecting Live Voice with saved valid API key...');
+          try {
+            await liveVoiceSession.unlockAudio();
+            const started = await liveVoiceSession.startSession({
+              userName: preferences.userName,
+              memoryContext: {
+                facts: memoryService.getContextFacts(),
+                deviceStatus,
+              },
+              recentHistory: messagesRef.current,
+            });
+            if (started) {
+              setIsListening(true);
+              setState('LISTENING');
+            }
+          } catch (e) {
+            console.warn('[ULTRON] Background auto-connect notice:', e);
+          }
+        }
+      }
+    };
+
+    // 1. Initial app load
+    checkAndAutoConnect();
+
+    // 2. Window focus & visibility change (when returning from another app or background)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkAndAutoConnect();
+      }
+    };
+
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
+    };
+  }, [preferences.userName, deviceStatus]);
 
   // -------------------------------------------------------------
   // Workflow Execution Runner
@@ -966,6 +1063,7 @@ export default function App() {
             transcription={transcription}
             assistantResponseText={assistantSpokenText}
             errorMessage={voiceErrorMessage}
+            toolExecutionNotice={toolExecutionNotice}
             onToggleListening={handleToggleListening}
             onSubmitCommand={(cmd, isVoice) => handleExecuteCommand(cmd, isVoice)}
             onDismissError={() => setVoiceErrorMessage(null)}
@@ -1118,6 +1216,7 @@ export default function App() {
         onToggleListening={handleToggleListening}
         onOpenVoiceLock={() => setVoiceLockModalOpen(true)}
         onInterruptAi={handleInterruptAi}
+        onApiKeyActivated={handleApiKeyActivated}
         onExecuteCommand={(cmd, isVoice) => handleExecuteCommand(cmd, isVoice)}
         onSelectTab={(tab) => {
           setActiveTab(tab);
