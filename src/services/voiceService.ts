@@ -7,6 +7,8 @@ import { voicePipelineDiagnostics } from './voicePipelineDiagnostics';
  */
 export class VoiceService {
   private isSpeaking: boolean = false;
+  private isListening: boolean = false;
+  private recognition: any = null;
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private chosenVoice: SpeechSynthesisVoice | null = null;
@@ -23,6 +25,93 @@ export class VoiceService {
         this.initVoices();
       };
     }
+  }
+
+  public supportsSpeechRecognition(): boolean {
+    if (typeof window === 'undefined') return false;
+    return !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+  }
+
+  public startListening(
+    onTranscript: (text: string, isFinal: boolean) => void,
+    onError?: (err: any) => void
+  ): boolean {
+    if (typeof window === 'undefined') return false;
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      console.warn('[VoiceService] Web Speech API not supported on this platform');
+      return false;
+    }
+
+    try {
+      this.stopSpeaking();
+      if (this.recognition) {
+        try { this.recognition.abort(); } catch (e) {}
+        this.recognition = null;
+      }
+
+      const rec = new SpeechRec();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = 'en-US';
+
+      rec.onstart = () => {
+        this.isListening = true;
+        console.log('[VoiceService] Speech recognition active');
+      };
+
+      rec.onresult = (event: any) => {
+        let interim = '';
+        let final = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const item = event.results[i];
+          if (item.isFinal) {
+            final += item[0].transcript;
+          } else {
+            interim += item[0].transcript;
+          }
+        }
+
+        const text = (final || interim).trim();
+        if (text) {
+          onTranscript(text, !!final);
+        }
+      };
+
+      rec.onerror = (errEvent: any) => {
+        console.warn('[VoiceService] Speech recognition notice:', errEvent?.error);
+        if (errEvent?.error === 'not-allowed') {
+          onError?.(new Error('Microphone permission denied'));
+        }
+      };
+
+      rec.onend = () => {
+        this.isListening = false;
+      };
+
+      rec.start();
+      this.recognition = rec;
+      this.isListening = true;
+      return true;
+    } catch (e) {
+      console.warn('[VoiceService] startListening exception:', e);
+      return false;
+    }
+  }
+
+  public stopListening(): void {
+    if (this.recognition) {
+      try {
+        this.recognition.stop();
+      } catch (e) {}
+      this.recognition = null;
+    }
+    this.isListening = false;
+  }
+
+  public getIsListening(): boolean {
+    return this.isListening;
   }
 
   private initVoices() {

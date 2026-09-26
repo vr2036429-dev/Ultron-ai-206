@@ -44,11 +44,11 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   const getStatusLabel = () => {
     if (toolExecutionNotice) return toolExecutionNotice;
     if (state === 'USER_SPEAKING' || (isListening && transcription)) return 'User Speaking...';
-    if (state === 'AI_SPEAKING' || state === 'SPEAKING' || isSpeaking) return 'ULTRON Speaking (24kHz)...';
+    if (state === 'AI_SPEAKING' || state === 'SPEAKING' || isSpeaking) return 'ULTRON Speaking (Neural Voice)...';
     if (state === 'PROCESSING' || state === 'THINKING') return 'Processing Directive...';
-    if (state === 'LISTENING' || isListening) return 'Connected / Ready (16kHz PCM)';
+    if (state === 'LISTENING' || isListening) return 'Connected / Ready (Neural Voice)';
     if (state === 'INTERRUPTED') return 'Interrupted (Barge-In)';
-    if (state === 'RECONNECTING') return 'Reconnecting Live Stream...';
+    if (state === 'RECONNECTING') return 'Connecting Voice Stream...';
     return 'Standby / Live Voice Ready';
   };
 

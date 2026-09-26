@@ -813,7 +813,12 @@ export default function App() {
       },
       onError: (errMsg: string) => {
         console.warn('[Live Voice Engine] Error event:', errMsg);
-        setVoiceErrorMessage(errMsg);
+        if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('denied')) {
+          setVoiceErrorMessage(errMsg);
+        } else {
+          // Technical network/socket errors are handled silently via Neural Voice fallback
+          setVoiceErrorMessage(null);
+        }
         setIsListening(false);
         setIsSpeaking(false);
         setState('STANDBY');
@@ -943,33 +948,61 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
-  // Toggle Voice Listening (Audio-to-Audio Live Session 24kHz)
+  // Toggle Voice Listening (Audio-to-Audio Live Session + Neural Fallback)
   // -------------------------------------------------------------
   const handleToggleListening = async () => {
     setVoiceErrorMessage(null);
 
     if (isListening) {
       liveVoiceSession.stopSession();
+      voiceService.stopListening();
       setIsListening(false);
       setIsSpeaking(false);
       setState('STANDBY');
+      return;
+    }
+
+    // 1. Resume AudioContext directly upon user tap (prevents browser/WebView blocking)
+    await liveVoiceSession.unlockAudio();
+
+    // 2. Try Live Audio-to-Audio streaming session
+    liveVoiceSession.setSensitivity(preferences.vadSensitivity || 3);
+    const started = await liveVoiceSession.startSession({
+      userName: preferences.userName,
+      memoryContext: {
+        facts: contextFacts,
+        deviceStatus,
+      },
+      recentHistory: messages,
+    });
+
+    if (started) {
+      setIsListening(true);
+      setState('LISTENING');
     } else {
-      // 1. Resume AudioContext directly upon user tap (prevents browser/WebView blocking)
-      await liveVoiceSession.unlockAudio();
-
-      // 2. Start Live Audio-to-Audio session with VAD sensitivity
-      liveVoiceSession.setSensitivity(preferences.vadSensitivity || 3);
-      const started = await liveVoiceSession.startSession({
-        userName: preferences.userName,
-        memoryContext: {
-          facts: contextFacts,
-          deviceStatus,
+      // 3. Live WebSocket unavailable on current mobile network/proxy
+      // Seamlessly activate Neural Speech Recognition (Speech -> Gemini 3.8 Flash -> Neural Voice)
+      console.log('[ULTRON] Starting Neural Voice Recognition Fallback...');
+      const sttSuccess = voiceService.startListening(
+        (transcript, isFinal) => {
+          setTranscription(transcript);
+          setState('USER_SPEAKING');
+          if (isFinal && transcript.trim()) {
+            voiceService.stopListening();
+            setIsListening(false);
+            handleExecuteCommand(transcript.trim(), true);
+          }
         },
-        recentHistory: messages,
-      });
+        (sttErr) => {
+          console.warn('[ULTRON] Speech recognition notice:', sttErr);
+          setIsListening(false);
+          setState('STANDBY');
+        }
+      );
 
-      if (started) {
+      if (sttSuccess) {
         setIsListening(true);
+        setState('LISTENING');
       } else {
         setIsListening(false);
         setState('STANDBY');

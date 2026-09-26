@@ -764,14 +764,10 @@ export class LiveVoiceSession {
         return false;
       }
 
-      // Silent reconnect attempt up to 3 times before showing red error banner
-      if (this.reconnectAttempts < this.maxReconnectAttempts) {
-        this.attemptReconnect();
-        return false;
-      }
-
+      // If WebSocket live audio is blocked by mobile proxy/network,
+      // silently transition to Standby/Neural Voice mode without scaring user with red error cards
+      console.warn('[LiveVoiceSession] WebSocket live streaming unavailable on this network. Neural Voice pipeline will serve directives.');
       this.setState('STOPPED');
-      this.callbacks?.onError(errMsg, false);
       return false;
     } finally {
       this.isConnecting = false;
@@ -887,20 +883,13 @@ export class LiveVoiceSession {
         return;
       }
 
-      // Silent reconnect attempt up to 3 times before displaying error banner
+      // Silent reconnect attempt up to 3 times before falling back to Standby
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
         this.attemptReconnect();
       } else {
         this.stopSession();
         this.setState('STOPPED');
-        if (closeEvent.code !== 1000) {
-          const codeStr = closeEvent.code ? `WS Code: ${closeEvent.code}` : 'WS Code: 1006';
-          const reasonStr = closeEvent.reason ? `, ${closeEvent.reason}` : '';
-          this.callbacks?.onError(
-            `Live voice connection drop ho gaya (${codeStr}${reasonStr}). Network check karke "Retry" karein.`,
-            false
-          );
-        }
+        console.warn('[LiveVoiceSession] WebSocket disconnected, switching to Standby/Neural Voice mode.');
       }
     };
 
